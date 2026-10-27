@@ -1,0 +1,155 @@
+/**
+ * Rony Saad Studio — Google Sheets backend.
+ *
+ * Setup (once):
+ *   1. Open your Google Sheet → Extensions → Apps Script, paste this file, Save.
+ *   2. Run `setup` once (Run ▸ setup) and approve access. It creates the tabs and
+ *      prints your passcode in the execution log (View ▸ Logs).
+ *   3. Deploy ▸ New deployment ▸ Web app — Execute as: Me, Who has access: Anyone.
+ *      Copy the Web app URL and paste it, with the passcode, into the Studio app.
+ *
+ * To change the passcode: Project Settings ▸ Script properties ▸ APP_KEY.
+ * After editing this file: Deploy ▸ Manage deployments ▸ Edit ▸ Version: New version.
+ */
+
+const TABLES = {
+  projects: ['id', 'code', 'client', 'phone', 'email', 'instagram', 'title', 'type', 'date', 'time',
+             'location', 'price', 'paid', 'expenses', 'status', 'marketing', 'posted', 'source',
+             'drive', 'notes', 'created', 'updated'],
+  items: ['id', 'projectId', 'title', 'status', 'due', 'notes'],
+  settings: ['id', 'value'],
+};
+const SHEET_NAMES = { projects: 'Projects', items: 'Deliverables', settings: 'Settings' };
+// Columns stored as plain text so Sheets never turns them into numbers or dates.
+const TEXT_COLS = ['id', 'projectId', 'code', 'phone', 'date', 'time', 'due', 'created', 'updated', 'value'];
+
+function setup() {
+  Object.keys(TABLES).forEach(t => sheet_(t));
+  const props = PropertiesService.getScriptProperties();
+  if (!props.getProperty('APP_KEY')) {
+    props.setProperty('APP_KEY', String(Math.floor(100000 + Math.random() * 900000)));
+  }
+  Logger.log('Your Studio passcode: ' + props.getProperty('APP_KEY'));
+}
+
+function doGet() {
+  return out_({ ok: true, app: 'Rony Saad Studio', message: 'Backend is running.' });
+}
+
+function doPost(e) {
+  let req = {};
+  try { req = JSON.parse(e.postData.contents); } catch (err) { return out_({ ok: false, error: 'Bad request' }); }
+  const key = PropertiesService.getScriptProperties().getProperty('APP_KEY');
+  if (!key || String(req.key) !== key) return out_({ ok: false, error: 'Wrong passcode' });
+
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try {
+    switch (req.action) {
+      case 'all':
+        return out_({ ok: true, projects: read_('projects'), items: read_('items'), settings: read_('settings') });
+      case 'upsert':
+        upsert_(req.table, req.rows || []);
+        return out_({ ok: true });
+      case 'delete':
+        remove_(req.table, req.ids || []);
+        return out_({ ok: true });
+      case 'replaceAll':
+        Object.keys(TABLES).forEach(t => {
+          const sh = sheet_(t);
+          if (sh.getLastRow() > 1) sh.getRange(2, 1, sh.getLastRow() - 1, sh.getLastColumn()).clearContent();
+          upsert_(t, (req.data && req.data[t]) || []);
+        });
+        return out_({ ok: true });
+      default:
+        return out_({ ok: false, error: 'Unknown action' });
+    }
+  } catch (err) {
+    return out_({ ok: false, error: String(err && err.message || err) });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function out_(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}
+
+function sheet_(table) {
+  if (!TABLES[table]) throw new Error('Unknown table ' + table);
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sh = ss.getSheetByName(SHEET_NAMES[table]);
+  if (!sh) sh = ss.insertSheet(SHEET_NAMES[table]);
+  const width = Math.max(sh.getLastColumn(), 1);
+  const header = sh.getRange(1, 1, 1, width).getValues()[0].map(String);
+  const missing = TABLES[table].filter(c => header.indexOf(c) === -1);
+  if (missing.length) {
+    const start = header.filter(String).length + 1;
+    sh.getRange(1, start, 1, missing.length).setValues([missing]);
+    sh.getRange(1, 1, 1, start + missing.length - 1).setFontWeight('bold');
+    sh.setFrozenRows(1);
+    headers_(sh).forEach((c, i) => {
+      if (TEXT_COLS.indexOf(c) !== -1) sh.getRange(2, i + 1, sh.getMaxRows() - 1, 1).setNumberFormat('@');
+    });
+  }
+  return sh;
+}
+
+function headers_(sh) {
+  return sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0].map(String);
+}
+
+function cell_(v, col) {
+  if (v instanceof Date) {
+    const tz = Session.getScriptTimeZone();
+    return Utilities.formatDate(v, tz, col === 'time' ? 'HH:mm' : 'yyyy-MM-dd');
+  }
+  return v;
+}
+
+function read_(table) {
+  const sh = sheet_(table);
+  const last = sh.getLastRow();
+  if (last < 2) return [];
+  const cols = headers_(sh);
+  return sh.getRange(2, 1, last - 1, cols.length).getValues()
+    .filter(r => String(r[cols.indexOf('id')]).trim() !== '')
+    .map(r => { const o = {}; cols.forEach((c, i) => { if (c) o[c] = cell_(r[i], c); }); return o; });
+}
+
+function upsert_(table, rows) {
+  if (!rows.length) return;
+  const sh = sheet_(table);
+  const cols = headers_(sh);
+  const idCol = cols.indexOf('id');
+  const last = sh.getLastRow();
+  const ids = last > 1 ? sh.getRange(2, idCol + 1, last - 1, 1).getValues().map(r => String(r[0])) : [];
+  const appends = [];
+  rows.forEach(row => {
+    const at = ids.indexOf(String(row.id));
+    if (at === -1) {
+      appends.push(cols.map(c => (c in row ? row[c] : '')));
+      return;
+    }
+    const range = sh.getRange(at + 2, 1, 1, cols.length);
+    const current = range.getValues()[0];
+    range.setValues([cols.map((c, i) => (c in row ? row[c] : current[i]))]);
+  });
+  if (!appends.length) return;
+  const room = sh.getMaxRows() - sh.getLastRow();
+  if (room < appends.length) sh.insertRowsAfter(sh.getMaxRows(), appends.length - room + 100);
+  sh.getRange(sh.getLastRow() + 1, 1, appends.length, cols.length).setValues(appends);
+}
+
+function remove_(table, ids) {
+  const sh = sheet_(table);
+  const cols = headers_(sh);
+  const idCol = cols.indexOf('id');
+  const last = sh.getLastRow();
+  if (last < 2) return;
+  const values = sh.getRange(2, idCol + 1, last - 1, 1).getValues();
+  const want = ids.map(String);
+  for (let i = values.length - 1; i >= 0; i--) {
+    if (want.indexOf(String(values[i][0])) !== -1) sh.deleteRow(i + 2);
+  }
+}
