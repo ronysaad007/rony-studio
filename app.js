@@ -1318,6 +1318,9 @@ $('#connectForm').addEventListener('submit', async e => {
   } finally { btn.disabled = false; }
 });
 
+// Makes Studio installable on the phone as its own app.
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => { /* still works as a normal page */ });
+
 function boot() {
   if (!cfg) { $('#connect').hidden = false; $('#app').hidden = true; return; }
   $('#connect').hidden = true; $('#app').hidden = false;
