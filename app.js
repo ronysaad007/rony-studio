@@ -33,6 +33,7 @@ const ICONS = {
   plus: '<path d="M12 5v14M5 12h14"/>',
   users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14.5a6.5 6.5 0 0 1 3.5 5.5"/>',
   box: '<path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.6-3.6"/>',
   more: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>',
   repeat: '<path d="M17 2l4 4-4 4"/><path d="M3 11V9a3 3 0 0 1 3-3h15"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a3 3 0 0 1-3 3H3"/>',
   camera: '<path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.5" r="3.5"/>',
@@ -1328,6 +1329,73 @@ function openQuickAdd(date) {
   };
 }
 
+// ───────────────────────────── search ─────────────────────────────
+// One box for everything: projects, clients, deliverables, invoices & quotes, expenses and retainers.
+// Every word must match; phone numbers match with or without spaces, +971 or 0.
+const phoneKeys = ph => { const d = waNumber(ph); return d ? `${d} ${d.startsWith('971') ? '0' + d.slice(3) : ''}` : ''; };
+function searchAll(q) {
+  const words = q.toLowerCase().split(/\s+/).filter(Boolean).map(w => (/^[+(]?\d[\d()-]{2,}$/.test(w) ? w.replace(/\D/g, '').replace(/^00/, '') : w));
+  const hit = (...v) => { const h = v.join(' ').toLowerCase(); return words.every(w => h.includes(w)); };
+  const by = (a, b) => b.d.localeCompare(a.d);
+  const ptitle = id => { const p = project(id); return p ? p.title : ''; };
+  return [
+    ['Projects', db.projects.filter(p => hit(p.code, p.client, p.title, p.type, p.location, p.notes, p.email, p.instagram, p.phone, phoneKeys(p.phone), p.status, fmtDate(p.date)))
+      .map(p => ({ go: 'p:' + p.id, d: dayOf(p), b: p.title || p.client, s: `${p.client} · ${p.code} · ${p.date ? fmtDate(p.date) : 'no date'}`, r: `<span class="tag ${STATUS_TAG[p.status]}">${p.status}</span>` }))],
+    ['Clients', [...clientMap().values()].filter(c => hit(c.name, c.phone, phoneKeys(c.phone), c.email, c.instagram))
+      .map(c => ({ go: 'c:' + c.key, d: c.last, b: c.name, s: `${c.n} project${c.n === 1 ? '' : 's'}${c.phone ? ' · ' + c.phone : ''}`, r: c.owed ? `<span class="tag t-bad">owes ${money(c.owed)}</span>` : '' }))],
+    ['Deliverables', db.items.filter(i => project(i.projectId) && hit(i.title, i.type, i.notes, ptitle(i.projectId), project(i.projectId).client))
+      .map(i => ({ go: 'i:' + i.projectId, d: i.due || dayOf(project(i.projectId)), b: itemLabel(i), s: `${ptitle(i.projectId)}${i.due ? ' · due ' + fmtDate(i.due) : ''}`, r: `<span class="tag ${i.status === 'Delivered' ? 't-ok' : 't-warn'}">${i.status}</span>` }))],
+    ['Invoices & quotes', db.docs.filter(d => hit(d.no, d.client, docKind(d.kind), ptitle(d.projectId)))
+      .map(d => ({ go: 'd:' + d.projectId, d: d.created, b: `${docKind(d.kind)} ${d.no}`, s: `${d.client} · ${fmtDate(d.date)}`, r: money(d.total) }))],
+    ['Expenses', db.expenses.filter(x => hit(x.note, x.category, ptitle(x.projectId), String(x.amount)))
+      .map(x => ({ go: 'x:' + x.id, d: x.date, b: x.note || x.category, s: `${x.category} · ${fmtDate(x.date)}${x.projectId ? ' · ' + ptitle(x.projectId) : ''}`, r: money(x.amount) }))],
+    ['Retainers', db.retainers.filter(r => hit(r.client, r.brand, r.phone, phoneKeys(r.phone), r.instagram, r.platforms))
+      .map(r => ({ go: 'r:' + r.id, d: r.start, b: r.client + (r.brand ? ' · ' + r.brand : ''), s: `${money(r.fee)} per month · ${r.status}`, r: '' }))],
+  ].map(([g, rows]) => [g, rows.sort(by)]).filter(([, rows]) => rows.length);
+}
+function openSearch() {
+  const m = $('#modal');
+  m.innerHTML = `<div class="modal-card search-card"><h2 id="modalTitle" class="sr">Search</h2>
+    <div class="s-bar">${icon('search')}<input id="sq" type="text" enterkeyhint="search" placeholder="Client, project, phone, invoice no.…" autocomplete="off" spellcheck="false" aria-label="Search everything" value="${esc(ui.sq || '')}"><button type="button" class="x" data-close aria-label="Close">✕</button></div>
+    <div class="s-res" id="sres" role="listbox"></div></div>`;
+  showLayer(m);
+  const row = r => `<button type="button" class="s-it" data-s-go="${esc(r.go)}" role="option"><span><b>${esc(r.b)}</b><small>${esc(r.s)}</small></span><span class="r">${r.r}</span></button>`;
+  const draw = () => {
+    const q = ui.sq = $('#sq').value.trim();
+    if (!q) {
+      const recent = [...db.projects].sort((a, b) => (b.updated || b.created).localeCompare(a.updated || a.created)).slice(0, 6);
+      $('#sres').innerHTML = recent.length ? `<div class="s-g">Recently changed</div>${recent.map(p => row({ go: 'p:' + p.id, b: p.title || p.client, s: `${p.client} · ${p.code}`, r: `<span class="tag ${STATUS_TAG[p.status]}">${p.status}</span>` })).join('')}` : '';
+    } else {
+      const groups = searchAll(q);
+      $('#sres').innerHTML = groups.length ? groups.map(([g, rows]) => `<div class="s-g">${g} <span class="n">${rows.length}</span></div>${rows.slice(0, 5).map(row).join('')}
+        ${rows.length > 5 ? (g === 'Projects' ? `<button type="button" class="linkbtn s-more" data-s-all>All ${rows.length} projects →</button>` : `<small class="s-more">+${rows.length - 5} more, add a word to narrow it down</small>`) : ''}`).join('')
+        : `<p class="empty"><b>Nothing found</b>Try a name, phone number, project code or invoice number.</p>`;
+    }
+    const first = $('.s-it', m); if (first) first.classList.add('on');
+  };
+  draw();
+  const sq = $('#sq'); sq.focus(); sq.select();
+  sq.addEventListener('input', draw);
+  sq.addEventListener('keydown', e => {
+    const its = $$('.s-it', m), i = its.findIndex(x => x.classList.contains('on'));
+    if (e.key === 'Enter') { e.preventDefault(); if (its[i]) its[i].click(); return; }
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    e.preventDefault(); if (!its.length) return;
+    const n = (i + (e.key === 'ArrowDown' ? 1 : -1) + its.length) % its.length;
+    its.forEach(x => x.classList.remove('on')); its[n].classList.add('on'); its[n].scrollIntoView({ block: 'nearest' });
+  });
+}
+function searchGo(go) {
+  const k = go.slice(0, 1), id = go.slice(2);
+  closeLayers();
+  if (k === 'p') openProject(id);
+  else if (k === 'i') openProject(id, null, 'items');
+  else if (k === 'd') openProject(id, null, 'docs');
+  else if (k === 'c') openClient(id);
+  else if (k === 'x') openExpense(id);
+  else if (k === 'r') openRetainer(id);
+}
+
 // ───────────────────────────── layers ─────────────────────────────
 let lastFocus = null;
 function showLayer(el) { lastFocus = document.activeElement; $('#scrim').hidden = false; el.hidden = false; document.body.style.overflow = 'hidden'; }
@@ -1574,6 +1642,9 @@ document.addEventListener('click', e => {
   if ((el = c('[data-money-csv]'))) { exportMoneyCsv(); return; }
   if ((el = c('[data-ret-open]'))) { openRetainer(el.dataset.retOpen); return; }
   if ((el = c('[data-more]'))) { openMore(); return; }
+  if ((el = c('[data-search]'))) { openSearch(); return; }
+  if ((el = c('[data-s-go]'))) { searchGo(el.dataset.sGo); return; }
+  if ((el = c('[data-s-all]'))) { ui.q = ui.sq; ui.filter = 'all'; ui.client = ''; closeLayers(); go('projects/list'); return; }
   if ((el = c('[data-more-go]'))) { e.preventDefault(); closeLayers(); go(el.dataset.moreGo); return; }
   if ((el = c('[data-cal]'))) {
     const n = +el.dataset.cal;
@@ -1605,6 +1676,7 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Enter' && e.target.matches('[data-client-open]')) openClient(e.target.dataset.clientOpen);
   if (e.key === 'Enter' && e.target.matches('.doc-it[data-doc]')) { const d = db.docs.find(x => x.id === e.target.dataset.doc); if (d) printDoc(d); }
   if (e.key === 'n' && !e.metaKey && !e.ctrlKey && !e.target.closest('input,textarea,select') && $('#scrim').hidden && cfg) { e.preventDefault(); openQuickAdd(); }
+  if (((e.key === '/' && !e.target.closest('input,textarea,select')) || (e.key === 'k' && (e.metaKey || e.ctrlKey))) && $('#scrim').hidden && cfg) { e.preventDefault(); openSearch(); }
 });
 $('#syncBtn').addEventListener('click', () => pull());
 window.addEventListener('hashchange', route);
@@ -1615,6 +1687,7 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 $$('[data-ic]').forEach(i => { i.outerHTML = icon(i.dataset.ic); });
 $('#setLink').innerHTML = icon('gear');
 $('#moreBtn').innerHTML = icon('more');
+$('#searchBtn').innerHTML = icon('search');
 if (SHEET_URL) { $('#cUrl').value = SHEET_URL; $('#cUrlField').style.display = 'none'; }
 
 $('#connectForm').addEventListener('submit', async e => {

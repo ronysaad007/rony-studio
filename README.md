@@ -8,6 +8,7 @@ A static web app (GitHub Pages) that reads and writes a private Google Sheet thr
 - **Deliverables per shoot type**: each new booking gets the usual deliverables for its type, with due dates from the shoot date (edit the lists in Settings)
 - **Clients**: built from your projects, with lifetime value, what they owe and WhatsApp
 - **Money**: booked, collected, expenses, profit, 12‑month chart, who still owes; sub-tabs for Invoices & quotes, Expenses and Team
+- **Search** (🔍 or `/`): projects, clients, deliverables, invoices & quotes, expenses and retainers, by name, phone, code or number
 - **More (…)**: Retainers and Settings
 - Invoices (print / Save as PDF), WhatsApp message templates, CSV and JSON export
 

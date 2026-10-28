@@ -413,6 +413,27 @@ td.n,th.n{text-align:right}
 .modal-card h2{font-size:22px;text-transform:uppercase;letter-spacing:-.03em}
 .modal-acts{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
 
+/* ---------- search ---------- */
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.modal-card.search-card{align-self:start;margin-top:min(10vh,80px);width:min(620px,100%);padding:14px;gap:10px;max-height:calc(100svh - min(10vh,80px) - 40px)}
+.s-bar{display:flex;align-items:center;gap:10px}
+.s-bar svg{width:20px;height:20px;color:var(--accent);flex:none}
+.s-bar input{flex:1;font-size:16px;border:0;background:transparent;padding:8px 0}
+.s-bar input:focus{border:0}
+.s-res{display:flex;flex-direction:column;gap:2px;overflow-y:auto;border-top:1px solid var(--line);padding-top:6px;min-height:0}
+.s-g{display:flex;align-items:center;gap:8px;font-size:10.5px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--faint);margin:10px 4px 4px}
+.s-g .n{background:var(--panel2);color:var(--fg);border-radius:10px;padding:0 7px;letter-spacing:0}
+.s-it{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;text-align:left;background:transparent;border:1px solid transparent;border-radius:var(--r);padding:8px 10px;cursor:pointer;min-width:0}
+.s-it>span:first-child{min-width:0}
+.s-it b{display:block;font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.s-it small{display:block;color:var(--faint);font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.s-it .r{flex:none;font-size:13px;font-variant-numeric:tabular-nums}
+.s-it:hover,.s-it.on{background:var(--panel);border-color:var(--line2)}
+.s-it.on{border-color:#ff641c80}
+.s-more{margin:2px 10px 4px;font-size:12.5px;color:var(--faint);align-self:flex-start}
+.linkbtn.s-more{color:var(--accent2)}
+@media (max-width:420px){#syncTxt{display:none}.top-right{gap:8px}}
+
 /* ---------- toast ---------- */
 .toast{position:fixed;z-index:70;left:50%;bottom:calc(96px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--fg);color:var(--bg);font-weight:600;font-size:13.5px;border-radius:var(--r);padding:10px 16px;box-shadow:0 14px 40px #000a;animation:pop .25s;max-width:calc(100vw - 32px)}
 .toast.err{background:var(--bad);color:#160606}
