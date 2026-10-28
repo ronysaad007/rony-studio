@@ -22,6 +22,7 @@ const TABLES = {
 const SHEET_NAMES = { projects: 'Projects', items: 'Deliverables', settings: 'Settings' };
 // Columns stored as plain text so Sheets never turns them into numbers or dates.
 const TEXT_COLS = ['id', 'projectId', 'code', 'phone', 'date', 'time', 'due', 'created', 'updated', 'value'];
+const MAX_FAILS = 5, LOCK_SECONDS = 15 * 60;
 
 function setup() {
   Object.keys(TABLES).forEach(t => sheet_(t));
@@ -40,7 +41,15 @@ function doPost(e) {
   let req = {};
   try { req = JSON.parse(e.postData.contents); } catch (err) { return out_({ ok: false, error: 'Bad request' }); }
   const key = PropertiesService.getScriptProperties().getProperty('APP_KEY');
-  if (!key || String(req.key) !== key) return out_({ ok: false, error: 'Wrong passcode' });
+  // Lock everyone out for 15 minutes after 5 wrong passcodes, so it can't be guessed.
+  const cache = CacheService.getScriptCache();
+  const fails = Number(cache.get('fails') || 0);
+  if (fails >= MAX_FAILS) return out_({ ok: false, error: 'Too many wrong tries. Try again in 15 minutes.' });
+  if (!key || String(req.key) !== key) {
+    cache.put('fails', String(fails + 1), LOCK_SECONDS);
+    return out_({ ok: false, error: 'Wrong passcode' });
+  }
+  if (fails) cache.remove('fails');
 
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);

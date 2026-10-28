@@ -37,6 +37,8 @@ const icon = name => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
 
 // ───────────────────────────── state ─────────────────────────────
 const CFG_KEY = 'rs.cfg', CACHE_KEY = 'rs.cache', QUEUE_KEY = 'rs.queue';
+// Rony's Google Sheet web app. New devices only need the passcode; the Sheet itself stays private.
+const SHEET_URL = 'https://script.google.com/macros/s/AKfycbze7PdIwVZj2jXXsNYgNBiAzTG5eJHSNkXAcVRaHPdACSz3jtehz6k-7O-IY_pQc5iI/exec';
 let cfg = store.get(CFG_KEY, null);
 let db = store.get(CACHE_KEY, { projects: [], items: [], settings: [] });
 let queue = store.get(QUEUE_KEY, []);
@@ -109,9 +111,8 @@ async function api(body) {
 }
 // The passcode was changed in the Sheet: ask for the new one, keep unsaved changes for after.
 function relock() {
-  const url = cfg.url;
-  store.del(CFG_KEY); cfg = null;
-  $('#cUrl').value = url; $('#cKey').value = '';
+  $('#cUrl').value = cfg.url;
+  store.del(CFG_KEY); cfg = null; $('#cKey').value = '';
   $('#cMsg').className = 'msg err'; $('#cMsg').textContent = 'Your passcode was changed. Enter the new one.';
   boot();
 }
@@ -856,6 +857,7 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 $$('[data-ic]').forEach(i => { i.outerHTML = icon(i.dataset.ic); });
 $('#setLink').innerHTML = icon('gear');
 $('#cliLink').innerHTML = icon('users');
+if (SHEET_URL) { $('#cUrl').value = SHEET_URL; $('#cUrlField').style.display = 'none'; }
 
 $('#connectForm').addEventListener('submit', async e => {
   e.preventDefault();
