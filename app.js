@@ -101,8 +101,19 @@ async function api(body) {
   });
   let json;
   try { json = await res.json(); } catch (e) { throw new Error('The Sheet did not answer. Check the web app link.'); }
-  if (!json.ok) throw new Error(json.error || 'Request failed');
+  if (!json.ok) {
+    if (json.error === 'Wrong passcode' && store.get(CFG_KEY, null)) relock();
+    throw new Error(json.error || 'Request failed');
+  }
   return json;
+}
+// The passcode was changed in the Sheet: ask for the new one, keep unsaved changes for after.
+function relock() {
+  const url = cfg.url;
+  store.del(CFG_KEY); cfg = null;
+  $('#cUrl').value = url; $('#cKey').value = '';
+  $('#cMsg').className = 'msg err'; $('#cMsg').textContent = 'Your passcode was changed. Enter the new one.';
+  boot();
 }
 function saveLocal() { store.set(CACHE_KEY, db); store.set(QUEUE_KEY, queue); }
 function setSync(state, txt) {
