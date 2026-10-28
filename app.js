@@ -1759,6 +1759,8 @@ $('#setLink').innerHTML = icon('gear');
 $('#moreBtn').innerHTML = icon('more');
 $('#searchBtn').innerHTML = icon('search');
 if (SHEET_URL) { $('#cUrl').value = SHEET_URL; $('#cUrlField').style.display = 'none'; }
+// Anywhere but the live address is a test copy: say so next to the logo.
+if (!location.hostname.endsWith('github.io')) document.body.classList.add('preview');
 
 $('#connectForm').addEventListener('submit', async e => {
   e.preventDefault();
