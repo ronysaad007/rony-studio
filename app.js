@@ -319,13 +319,13 @@ function alerts() {
     if (p.status === 'Cancelled') return;
     const ref = `${p.code} · ${p.client}`;
     if (!p.marketing && balance(p) > 0 && ['Shot', 'Editing', 'Delivered'].includes(p.status))
-      out.push({ g: 'Collect payment', sev: 'bad', p, title: `${money(balance(p))} due · ${p.title}`, sub: ref, act: 'pay' });
+      out.push({ g: 'Collect payment', money: true, sev: 'bad', p, title: `${money(balance(p))} due · ${p.title}`, sub: ref, act: 'pay' });
     if (p.date && p.date < t && ['Inquiry', 'Booked'].includes(p.status))
       out.push({ g: 'Date passed', sev: 'warn', p, title: `${p.title} was on ${fmtDate(p.date)}`, sub: 'Still marked ' + p.status, act: 'shot' });
     if (!p.date && ACTIVE.includes(p.status))
       out.push({ g: 'Missing info', sev: 'info', p, title: `${p.title} has no shoot date`, sub: ref, act: 'open' });
     if (!p.marketing && !p.price && p.status !== 'Inquiry')
-      out.push({ g: 'Missing info', sev: 'info', p, title: `${p.title} has no price`, sub: ref, act: 'open' });
+      out.push({ g: 'Missing info', money: true, sev: 'info', p, title: `${p.title} has no price`, sub: ref, act: 'open' });
     if (['Shot', 'Editing'].includes(p.status) && p.date && daysBetween(p.date, t) > deliverDays && !itemsOf(p.id).some(i => i.due >= t))
       out.push({ g: 'Delivery taking long', sev: 'warn', p, title: `${p.title} shot ${daysBetween(p.date, t)} days ago`, sub: 'Not delivered yet', act: 'open' });
     if (p.marketing && !p.posted && (p.status === 'Delivered' || (p.date && daysBetween(p.date, t) > postDays)))
@@ -340,10 +340,10 @@ function alerts() {
   db.crew.forEach(c => {
     const p = project(c.projectId);
     if (!p || c.paidOn || !c.fee || !['Shot', 'Editing', 'Delivered'].includes(p.status)) return;
-    out.push({ g: 'Pay your team', sev: 'warn', p, crew: c, title: `${money(c.fee)} to ${c.name || 'your ' + c.role.toLowerCase()}`, sub: `${c.role} · ${p.title}`, act: 'crew' });
+    out.push({ g: 'Pay your team', money: true, sev: 'warn', p, crew: c, title: `${money(c.fee)} to ${c.name || 'your ' + c.role.toLowerCase()}`, sub: `${c.role} · ${p.title}`, act: 'crew' });
   });
   db.retainers.filter(r => r.status === 'Active').forEach(r => {
-    if (retDue(r)) out.push({ g: 'Collect payment', sev: 'bad', r, title: `${money(r.fee)} · ${r.client} monthly fee`, sub: `${monthName(thisMonth())} not received yet`, act: 'ret-pay' });
+    if (retDue(r)) out.push({ g: 'Collect payment', money: true, sev: 'bad', r, title: `${money(r.fee)} · ${r.client} monthly fee`, sub: `${monthName(thisMonth())} not received yet`, act: 'ret-pay' });
     if (r.nextReport && r.nextReport <= t) out.push({ g: 'Retainer tasks', sev: 'info', r, title: `Send ${r.client} their monthly report`, sub: `Due ${fmtDate(r.nextReport)}`, act: 'ret-report' });
     if (r.renewal && r.renewal >= t && r.renewal <= addDays(t, 14)) out.push({ g: 'Retainer tasks', sev: 'info', r, title: `${r.client} renews ${fmtDate(r.renewal)}`, sub: 'Talk to them about the next term', act: 'ret-open' });
   });
@@ -408,8 +408,9 @@ const clientNames = () => [...new Set(db.projects.map(p => p.client).filter(Bool
 
 // ───────────────────────────── views ─────────────────────────────
 // One page for "what do I do today": money to collect, deliveries, shoots, loose ends, then the month.
-function renderToday() {
-  const t = today(), now = new Date(), week = addDays(t, 7);
+// Everything still owed to you: balances after the shoot, deposits before it, retainer fees.
+function collectPanel() {
+  const t = today();
   const dueNow = p => ['Shot', 'Editing', 'Delivered'].includes(p.status) || (p.date && p.date < t);
   const owed = db.projects.filter(p => p.status !== 'Cancelled' && !p.marketing && balance(p) > 0)
     .sort((a, b) => dueNow(b) - dueNow(a) || dayOf(a).localeCompare(dayOf(b)));
@@ -429,41 +430,44 @@ function renderToday() {
   const retRow = r => `<div class="alert bad" data-ret-open="${r.id}" role="button" tabindex="0"><i class="sev"></i><div><b>${money(r.fee)} · ${esc(r.client)} monthly fee</b><small>${monthName(thisMonth())} not received yet</small></div><div class="acts">${waRetBtn(r)}<button class="btn sm" data-ret-month="${r.id}" data-m="${thisMonth()}">Mark paid</button></div></div>`;
   const grp = (label, rows) => (rows.length ? `<div class="alert-group">${label} <span class="n">${rows.length}</span></div>${rows.join('')}` : '');
   const collect = owed.length || rets.length ? `<div class="alerts">${grp('Due now', owed.filter(dueNow).map(collectRow).concat(rets.map(retRow)))}${grp('Deposits', deps.map(depRow))}${grp('Booked, not shot yet', owed.filter(p => !dueNow(p) && !deps.some(x => x.p === p)).map(collectRow))}</div>` : '<p class="allclear">Everyone has paid.</p>';
+  return `<div class="ph"><h2>To collect</h2><small>${money(owedTotal)} in total${nowTotal ? ' · ' + money(nowTotal) + ' due now' : ''}</small></div>${collect}`;
+}
 
+// Today: what's booked, what's still to deliver, and a quick way to add a booking. Money lives on the Money page.
+function renderToday() {
+  const t = today(), now = new Date(), week = addDays(t, 7);
   const upcoming = db.projects.filter(p => p.date >= t && !['Cancelled', 'Inquiry', 'Delivered'].includes(p.status)).sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
-  const next = upcoming[0];
+  const next = upcoming[0], thisWeek = upcoming.filter(p => p.date <= week).length;
+  const inquiries = db.projects.filter(p => p.status === 'Inquiry').sort((a, b) => (a.date || '9999').localeCompare(b.date || '9999'));
   const openItems = db.items.filter(i => i.status !== 'Delivered' && project(i.projectId) && project(i.projectId).status !== 'Cancelled');
   const late = openItems.filter(i => i.due && i.due < t).length, soon = openItems.filter(i => i.due && i.due >= t && i.due <= week).length;
-  const rest = alerts().filter(a => !['Collect payment', 'Overdue deliveries', 'Due soon'].includes(a.g));
+  const rest = alerts().filter(a => !a.money && !['Overdue deliveries', 'Due soon'].includes(a.g));
   const hour = now.getHours();
   const greet = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
   const loc = p => (p.location ? (/^https?:/.test(p.location) ? `<a class="linkbtn" href="${esc(p.location)}" target="_blank" rel="noopener">Open location ↗</a>` : esc(p.location)) : '');
-
-  $('#view').innerHTML = `
-  <div class="vhead"><div><p class="eyebrow">${DAYS[now.getDay()]} ${now.getDate()} ${MONTHS[now.getMonth()]} ${now.getFullYear()}</p>
-    <h1>${greet}, <span class="a">${esc(setting('businessName').split(' ')[0])}</span></h1></div></div>
-  <div class="kpis">
-    <button class="kpi" data-jump="t-money"><small>To collect</small><b class="acc">${money(nowTotal)}</b><em>${owedTotal > nowTotal ? `due now · ${money(owedTotal)} in total` : 'due now'}</em></button>
-    <button class="kpi" data-jump="t-deliver"><small>Late deliveries</small><b class="${late ? 'bad' : ''}">${late}</b><em>past their due date</em></button>
-    <button class="kpi" data-jump="t-deliver"><small>Due this week</small><b>${soon}</b><em>by ${fmtDate(week)}</em></button>
-    <button class="kpi" data-jump="t-shoots"><small>Next shoot</small><b>${next ? (next.date === t ? 'Today' : next.date === addDays(t, 1) ? 'Tomorrow' : 'in ' + daysBetween(t, next.date) + ' d') : '—'}</b><em>${next ? esc(next.client) + (next.time ? ' · ' + fmtTime(next.time) : '') : 'nothing booked ahead'}</em></button>
-  </div>
-  <div class="cols">
-    <div class="stack">
-      <section class="panel" id="t-money"><div class="ph"><h2>Money to collect</h2><a class="linkbtn" href="#money">${money(owedTotal)} · Money →</a></div>${collect}</section>
-      <section class="panel" id="t-deliver">${deliverSection()}</section>
-    </div>
-    <div class="stack">
-      <section class="panel" id="t-shoots"><div class="ph"><h2>Upcoming shoots</h2><button class="linkbtn" data-jump="t-cal">Calendar ↓</button></div>
-        ${next ? `<div class="hero sm"><div><div class="label">Next · ${esc(next.code)}</div><h3>${esc(next.title)}</h3>
+  const side = `${inquiries.length ? `<section class="panel"><div class="ph"><h2>Inquiries</h2><small>waiting to confirm</small></div><div class="mini">${inquiries.slice(0, 6).map(p => `<div class="mini-it" data-open="${p.id}" role="button" tabindex="0"><div><b>${esc(p.title || p.client)}</b><small>${esc(p.client)}${p.type ? ' · ' + esc(p.type) : ''}</small></div><div class="r">${p.date ? fmtDate(p.date) : '<small>No date</small>'}</div></div>`).join('')}</div>
+      ${inquiries.length > 6 ? `<a class="linkbtn" href="#projects/board">All ${inquiries.length} on the board →</a>` : ''}</section>` : ''}
+    ${rest.length ? `<section class="panel"><div class="ph"><h2>Also needs you</h2><small>${rest.length} item${rest.length === 1 ? '' : 's'}</small></div>${renderAlerts(rest)}</section>` : ''}`;
+  const main = `<section class="panel" id="t-shoots"><div class="ph"><h2>Upcoming shoots</h2><button class="linkbtn" data-jump="t-cal">Calendar ↓</button></div>
+        ${next ? `<div class="hero"><div><div class="label">Next · ${esc(next.code)}</div><h3>${esc(next.title)}</h3>
           <div class="meta"><span>${fmtDate(next.date)}${next.time ? ' · ' + fmtTime(next.time) : ''}</span><span>${esc(next.client)}</span>${next.location ? `<span>${loc(next)}</span>` : ''}</div>
           <div class="acts">${waBtn(next, 'remind', 'Send reminder')}<button class="btn sm" data-open="${next.id}">Open</button></div></div>
           <div class="cd" id="cd" data-at="${next.date}T${next.time || '00:00'}"></div></div>` : '<div class="empty"><b>Nothing booked ahead</b><button class="btn primary sm" data-add style="margin-top:10px">+ New booking</button></div>'}
         ${upcoming.length > 1 ? `<div class="mini">${upcoming.slice(1, 8).map(p => `<div class="mini-it" data-open="${p.id}" role="button" tabindex="0"><div><b>${esc(p.title)}</b><small>${esc(p.client)}${p.location && !/^https?:/.test(p.location) ? ' · ' + esc(p.location) : ''}</small></div><div class="r">${fmtDate(p.date)}<small>${p.date === t ? 'Today' : 'in ' + daysBetween(t, p.date) + ' d'}${p.time ? ' · ' + fmtTime(p.time) : ''}</small></div></div>`).join('')}</div>` : ''}
         ${upcoming.length > 8 ? `<a class="linkbtn" href="#projects" data-filter="active">All ${upcoming.length} upcoming →</a>` : ''}</section>
-      ${rest.length ? `<section class="panel"><div class="ph"><h2>Also needs you</h2><small>${rest.length} item${rest.length === 1 ? '' : 's'}</small></div>${renderAlerts(rest)}</section>` : ''}
-    </div>
+      <section class="panel" id="t-deliver">${deliverSection()}</section>`;
+
+  $('#view').innerHTML = `
+  <div class="vhead"><div><p class="eyebrow">${DAYS[now.getDay()]} ${now.getDate()} ${MONTHS[now.getMonth()]} ${now.getFullYear()}</p>
+    <h1>${greet}, <span class="a">${esc(setting('businessName').split(' ')[0])}</span></h1></div>
+    <button class="btn primary" data-add>+ New booking</button></div>
+  <div class="kpis">
+    <button class="kpi" data-jump="t-shoots"><small>Next shoot</small><b>${next ? (next.date === t ? 'Today' : next.date === addDays(t, 1) ? 'Tomorrow' : 'in ' + daysBetween(t, next.date) + ' d') : '—'}</b><em>${next ? esc(next.client) + (next.time ? ' · ' + fmtTime(next.time) : '') : 'nothing booked ahead'}</em></button>
+    <button class="kpi" data-jump="t-shoots"><small>Shoots this week</small><b>${thisWeek}</b><em>${upcoming.length} booked ahead</em></button>
+    <button class="kpi" data-jump="t-deliver"><small>Late deliveries</small><b class="${late ? 'bad' : ''}">${late}</b><em>past their due date</em></button>
+    <button class="kpi" data-jump="t-deliver"><small>Due this week</small><b>${soon}</b><em>by ${fmtDate(week)}</em></button>
   </div>
+  ${side.trim() ? `<div class="cols"><div class="stack">${main}</div><div class="stack">${side}</div></div>` : main}
   <section class="panel" id="t-cal">${calendarSection()}</section>`;
   tickCountdown();
 }
@@ -724,8 +728,9 @@ function moneyReport() {
     <div class="kpi"><small>Revenue</small><b>${money(st.revenue)}</b><em>collected ${money(st.collected)} · ${pct(st.collected, st.revenue)}%</em></div>
     <div class="kpi"><small>Spent</small><b>${money(st.spent)}</b><em>team ${money(st.team)} · other ${money(st.spent - st.team)}</em></div>
     <div class="kpi"><small>Profit</small><b class="acc">${money(st.profit)}</b><em>${pct(st.profit, st.revenue)}% margin</em></div>
-    <button class="kpi" data-filter="unpaid"><small>Still to collect</small><b>${money(owedTotal)}</b><em>${owed.length} client${owed.length === 1 ? '' : 's'} owe you</em></button>
+    <button class="kpi" data-jump="m-collect"><small>Still to collect</small><b>${money(owedTotal)}</b><em>${owed.length} client${owed.length === 1 ? '' : 's'} owe you</em></button>
   </div>
+  <section class="panel" id="m-collect">${collectPanel()}</section>
   <section class="panel"><div class="ph"><h2>Last 12 months</h2><div class="legend" style="margin:0"><span><i style="background:var(--accent)"></i>Revenue</span><span><i style="background:#ffffff40"></i>Spent</span><span><i class="ln"></i>Profit</span></div></div>${svg}
     <p class="fine">Hover a month to see its numbers.</p></section>
   <div class="cols">
@@ -752,8 +757,8 @@ function moneyReport() {
     <section class="panel"><div class="ph"><h2>Latest expenses</h2><a class="linkbtn" href="#money/expenses">${st.ledger.length} · All expenses →</a></div>
       ${st.ledger.length ? expenseList(st.ledger.slice().sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5))
         : '<div class="empty"><b>No expenses logged</b>Rentals, AI tools, editing, travel, subscriptions… add them to see where your money goes.</div>'}</section>
-    <section class="panel"><div class="ph"><h2>Waiting to collect</h2><small>${money(owedTotal)} total</small></div>
-      ${owed.length ? `<div class="mini">${owed.map(p => `<div class="mini-it" data-open="${p.id}"><div><b>${esc(p.title)}</b><small>${esc(p.client)} · ${p.date ? fmtDate(p.date) : 'no date'} · paid ${money(p.paid)} of ${money(p.price)}</small></div><div class="r"><b>${money(balance(p))}</b></div></div>`).join('')}</div>` : '<p class="allclear">Everyone has paid.</p>'}</section>
+    <section class="panel"><div class="ph"><h2>Pay your team</h2><a class="linkbtn" href="#money/team">Team →</a></div>
+      ${(() => { const pay = alerts().filter(a => a.g === 'Pay your team'); return pay.length ? renderAlerts(pay) : '<p class="allclear">Your team is fully paid.</p>'; })()}</section>
   </div>`];
 }
 const expenseList = rows => `<div class="mini">${rows.map(x => { const p = project(x.projectId); return `<div class="mini-it" data-exp-open="${x.id}" role="button" tabindex="0"><div><b>${esc(x.note || x.category)}</b><small>${fmtDate(x.date)} · <span class="tag t-mute">${esc(x.category)}</span>${p ? ' · ' + esc(p.title) : ''}</small></div><div class="r"><b>${money(x.amount)}</b></div></div>`; }).join('')}</div>`;

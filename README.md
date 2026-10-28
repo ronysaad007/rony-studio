@@ -3,12 +3,12 @@
 Bookings, deliveries and money for Rony Saad's freelance photography & film work.
 A static web app (GitHub Pages) that reads and writes a private Google Sheet through a small Apps Script.
 
-- **Today**: money to collect, deliveries due or late (tick them off inline), upcoming shoots with a countdown, loose ends, and the month calendar
+- **Today**: upcoming shoots with a countdown, inquiries, deliveries due or late (tick them off inline), other to-dos and the month calendar. No money here
 - **Projects**: a list with one-tap status (Booked → Shot → Editing → Delivered), search and filters, or a pipeline board with a column per stage (drag cards, or tap the next step). Each project opens in tabs: Overview, Deliverables, Money, Invoices & quotes, Notes
 - **Deliverables per shoot type**: each new booking gets the usual deliverables for its type, with due dates from the shoot date (edit the lists in Settings)
 - **Clients**: built from your projects, with lifetime value, what they owe and WhatsApp
-- **Money**: booked, collected, expenses, profit, 12‑month chart, who still owes; sub-tabs for Invoices & quotes, Expenses and Team
-- **Deposits**: pick each client's deposit and its due date when you make a quotation; Today reminds you until it comes in, with a WhatsApp reminder that includes your bank details from Settings
+- **Money**: what's still to collect (balances, deposits, retainer fees, with WhatsApp reminders), booked, collected, expenses, profit, 12‑month chart; sub-tabs for Invoices & quotes, Expenses and Team
+- **Deposits**: pick each client's deposit and its due date when you make a quotation; Money → To collect reminds you until it comes in, with a WhatsApp reminder that includes your bank details from Settings
 - **Search** (🔍 or `/`): projects, clients, deliverables, invoices & quotes, expenses and retainers, by name, phone, code or number
 - **More (…)**: Retainers and Settings
 - Invoices (print / Save as PDF), WhatsApp message templates, CSV and JSON export
