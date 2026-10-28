@@ -650,24 +650,160 @@ function moneyStats(from, to) {
   return { live, paidP, retPaid, retIn, ledger, team, other, logged, revenue, collected, spent, profit: revenue - spent };
 }
 const monthEnd = mk => ymd(new Date(+mk.slice(0, 4), +mk.slice(5), 0));
-function barList(rows, empty) {
+function barList(rows, empty, fmt = money) {
   if (!rows.length) return `<div class="empty">${empty}</div>`;
   const top = Math.max(1, ...rows.map(r => r.v));
-  return `<div class="bars">${rows.map(r => `<div class="bar-row" ${r.attr || ''}><span>${esc(r.k)}</span><b>${money(r.v)}</b><div class="track"><i style="width:${(r.v / top * 100).toFixed(1)}%"></i></div><small>${r.sub || ''}</small></div>`).join('')}</div>`;
+  return `<div class="bars">${rows.map(r => `<div class="bar-row" ${r.attr || ''}><span>${esc(r.k)}</span><b>${fmt(r.v)}</b><div class="track"><i style="width:${(r.v / top * 100).toFixed(1)}%"></i></div><small>${r.sub || ''}</small></div>`).join('')}</div>`;
+}
+const nf = v => Math.round(v).toLocaleString('en-US');
+const kf = v => (Math.abs(v) >= 1000 ? (v / 1000).toLocaleString('en-US', { maximumFractionDigits: 1 }) + 'k' : Math.round(v));
+// Time slices for the chosen period: days for a month, weeks for 3 months, months for a year, months (or years) for all time.
+function periodBuckets() {
+  const t = today(), [from] = periodRange(), out = [];
+  if (ui.period === 'month') { for (let d = from; d <= monthEnd(t.slice(0, 7)); d = addDays(d, 1)) out.push({ from: d, to: d, label: String(+d.slice(8)), title: fmtDate(d) }); return out; }
+  if (ui.period === '3m') { for (let d = from; d <= t; d = addDays(d, 7)) out.push({ from: d, to: addDays(d, 6), label: `${+d.slice(8)} ${MONTHS[+d.slice(5, 7) - 1]}`, title: `Week of ${fmtDate(d)}` }); return out; }
+  let first = t.slice(0, 4) + '-01';
+  const last = ui.period === 'year' ? t.slice(0, 4) + '-12' : t.slice(0, 7);
+  if (ui.period === 'all') first = [...db.projects.map(dayOf), ...db.expenses.map(x => x.date), ...db.retainers.flatMap(paidMonths)].map(v => String(v).slice(0, 7)).filter(v => /^\d{4}-\d{2}$/.test(v) && v <= last).sort()[0] || first;
+  const months = []; for (let mk = first; mk <= last; mk = addMonths(mk + '-01', 1).slice(0, 7)) months.push(mk);
+  if (months.length > 24) { for (let y = +first.slice(0, 4); y <= +last.slice(0, 4); y++) out.push({ from: y + '-01-01', to: y + '-12-31', label: String(y), title: String(y) }); return out; }
+  return months.map((mk, i) => ({ from: mk + '-01', to: monthEnd(mk), label: MONTHS[+mk.slice(5) - 1] + (ui.period === 'all' && (i === 0 || mk.endsWith('-01')) ? ' ’' + mk.slice(2, 4) : ''), title: monthName(mk) }));
+}
+const bucketUnit = bks => (ui.period === 'month' ? 'Day' : ui.period === '3m' ? 'Week' : bks.length && bks[0].from.endsWith('-01-01') && bks[0].to.endsWith('-12-31') ? 'Year' : 'Month');
+// Chart width in real pixels, so axis text stays 11px on a phone and on a wide screen.
+const chartW = half => { const full = Math.min(innerWidth, 1240) - 70; return Math.max(280, Math.round(half && innerWidth > 960 ? (full - 18) / 2 : full)); };
+const niceStep = x => { const p = Math.pow(10, Math.floor(Math.log10(x || 1))), m = x / p; return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * p; };
+// Columns on one axis. series: [{ k, name, color }] side by side, or stacked with opts.stack; opts.line adds a 2px line (profit).
+function columnChart(bks, series, opts = {}) {
+  const W = opts.w || chartW(), H = opts.h || 240, L = 44, R = 8, T = 12, B = 26, n = bks.length, cw = (W - L - R) / Math.max(1, n);
+  const axis = opts.axis || nf, tip = opts.tip || nf, val = (b, k) => b.v[k] || 0;
+  const tops = bks.map(b => (opts.stack ? series.reduce((sum, x) => sum + val(b, x.k), 0) : Math.max(0, ...series.map(x => val(b, x.k)))));
+  // Past 16 slices a line turns into noise; it stays in the hover text.
+  const drawLine = opts.line && n <= 16, lv = drawLine ? bks.map(b => val(b, opts.line.k)) : [];
+  const step = niceStep((Math.max(1, ...tops, ...lv) - Math.min(0, ...lv)) / 4);
+  const hi = Math.ceil(Math.max(1, ...tops, ...lv) / step) * step, lo = Math.floor(Math.min(0, ...lv) / step) * step;
+  const y = v => T + (H - T - B) * (1 - (v - lo) / (hi - lo));
+  const groups = opts.stack ? 1 : series.length, bw = Math.min(24, Math.max(2, (cw * 0.72 - (groups - 1) * 2) / groups));
+  const col = (x, y0, y1, w, c, round) => { const r = round ? Math.min(4, w / 2, y0 - y1) : 0; return `<path d="M${x},${y0}V${y1 + r}Q${x},${y1} ${x + r},${y1}H${x + w - r}Q${x + w},${y1} ${x + w},${y1 + r}V${y0}Z" fill="${c}"/>`; };
+  const every = n <= 8 ? 1 : Math.ceil(n / Math.max(4, Math.floor(W / 64)));
+  const ticks = []; for (let v = lo; v <= hi + step / 2; v += step) ticks.push(v);
+  let marks = '';
+  bks.forEach((b, i) => {
+    const cx = L + i * cw + cw / 2;
+    if (opts.stack) {
+      let cum = 0; const last = series.map(x => val(b, x.k)).reduce((m, v, j) => (v ? j : m), -1);
+      series.forEach((x, j) => { const v = val(b, x.k); if (!v) return; const y0 = cum ? y(cum) - 2 : y(0), y1 = y(cum + v); cum += v; if (y0 - y1 >= 1) marks += col(cx - bw / 2, y0, y1, bw, x.color, j === last); });
+    } else series.forEach((x, j) => { const v = val(b, x.k); if (v > 0) marks += col(cx - (groups * bw + (groups - 1) * 2) / 2 + j * (bw + 2), y(0), y(v), bw, x.color, true); });
+    if (i % every === 0) marks += `<text x="${cx}" y="${H - 8}" text-anchor="middle">${esc(b.label)}</text>`;
+    marks += `<rect class="hit" x="${L + i * cw}" y="${T}" width="${cw}" height="${H - T - B}"><title>${esc(b.title)}${series.concat(opts.line ? [opts.line] : []).map(x => `\n${x.name} ${tip(val(b, x.k))}`).join('')}</title></rect>`;
+  });
+  const line = drawLine ? `<polyline points="${bks.map((b, i) => `${L + i * cw + cw / 2},${y(val(b, opts.line.k))}`).join(' ')}" fill="none" stroke="var(--fg)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" pointer-events="none"/>
+    ${bks.map((b, i) => `<circle cx="${L + i * cw + cw / 2}" cy="${y(val(b, opts.line.k))}" r="4" fill="var(--fg)" stroke="var(--panel)" stroke-width="2" pointer-events="none"/>`).join('')}` : '';
+  const keys = series.concat(drawLine ? [{ ...opts.line, line: true }] : []);
+  return `${keys.length > 1 ? `<div class="legend chart-key">${keys.map(x => `<span><i ${x.line ? 'class="ln"' : `style="background:${x.color}"`}></i>${esc(x.name)}</span>`).join('')}</div>` : ''}
+  <svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(opts.label || '')}">
+    <g class="grid">${ticks.map(v => `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" ${v === 0 && lo < 0 ? 'class="zero"' : ''}/><text x="${L - 8}" y="${y(v) + 4}" text-anchor="end">${axis(v)}</text>`).join('')}</g>
+    ${marks}${line}</svg>`;
+}
+// One bar split into parts that add up to a whole, with a key underneath.
+function stackBar(parts, empty, fmt = nf) {
+  const tot = parts.reduce((sum, x) => sum + x.v, 0);
+  if (!tot) return `<div class="empty">${empty}</div>`;
+  const pc = v => Math.round(v / tot * 100) + '%';
+  return `<div class="sbar" role="img" aria-label="${esc(parts.map(x => `${x.name} ${fmt(x.v)}`).join(', '))}">${parts.filter(x => x.v).map(x => `<i style="flex:${x.v};background:${x.c}" title="${esc(x.name)}: ${fmt(x.v)} (${pc(x.v)})"></i>`).join('')}</div>
+    <div class="skey">${parts.map(x => `<div><i style="background:${x.c}"></i><span>${esc(x.name)}</span><b>${fmt(x.v)}</b><small>${pc(x.v)}</small></div>`).join('')}</div>`;
 }
 const PERIODS = { month: 'This month', '3m': '3 months', year: 'This year', all: 'All time' };
-const MTABS = { report: 'Report', docs: 'Invoices & quotes', expenses: 'Expenses', team: 'Team' };
+const MTABS = { report: 'Report', charts: 'Charts', docs: 'Invoices & quotes', expenses: 'Expenses', team: 'Team' };
 // Money: the report, plus invoices & quotes, expenses and team as sub-tabs (#money/docs, #money/expenses, #money/team).
 function renderMoney() {
-  const tab = MTABS[ui.mtab] ? ui.mtab : 'report', dated = ['report', 'expenses'].includes(tab);
-  const [eyebrow, body] = { report: moneyReport, docs: docsBody, expenses: expensesBody, team: teamBody }[tab]();
+  const tab = MTABS[ui.mtab] ? ui.mtab : 'report', dated = ['report', 'charts', 'expenses'].includes(tab);
+  const [eyebrow, body] = { report: moneyReport, charts: chartsBody, docs: docsBody, expenses: expensesBody, team: teamBody }[tab]();
   $('#view').innerHTML = `
   <div class="vhead"><div><p class="eyebrow">${eyebrow}</p><h1>Mo<span class="o">ney</span></h1></div>
     ${dated ? `<div class="vacts"><div class="seg" role="group" aria-label="Period">${Object.entries(PERIODS).map(([key, v]) => `<button data-period="${key}" aria-pressed="${ui.period === key}">${v}</button>`).join('')}</div>
-    <button class="btn primary sm" data-exp-new>+ Add expense</button></div>` : ''}</div>
+    ${tab === 'charts' ? '' : '<button class="btn primary sm" data-exp-new>+ Add expense</button>'}</div>` : ''}</div>
   <nav class="tabs" aria-label="Money">${Object.entries(MTABS).map(([k, v]) => `<a href="#money${k === 'report' ? '' : '/' + k}" ${k === tab ? 'aria-current="page"' : ''}>${v}</a>`).join('')}</nav>
   ${body}`;
   if (tab === 'docs') $('#dq').addEventListener('input', e => { const q = e.target.value.toLowerCase(); $$('#dlist .doc-it').forEach(r => { r.hidden = !r.textContent.toLowerCase().includes(q); }); });
+}
+const moneyChart = (bks, w) => columnChart(bks, [{ k: 'rev', name: 'Revenue', color: 'var(--accent)' }, { k: 'exp', name: 'Spent', color: '#ffffff40' }],
+  { line: { k: 'prof', name: 'Profit' }, axis: kf, tip: money, label: 'Revenue, spending and profit', w });
+const GRAY = '#ffffff40', GRAY2 = '#ffffff1c';
+// Charts: the whole business at a glance, for the chosen period. Money, shoots, bookings, clients, deliveries, posting.
+function chartsBody() {
+  const [from, to] = periodRange(), t = today(), per = PERIODS[ui.period], half = chartW(true);
+  const inRange = d => d && d >= from && d <= to;
+  const bks = periodBuckets();
+  const live = db.projects.filter(p => p.status !== 'Cancelled' && p.status !== 'Inquiry' && inRange(p.date));
+  const paidP = live.filter(p => !p.marketing), st = moneyStats(from, to);
+  const pct = (a, b) => (b ? Math.round(a / b * 100) : 0);
+  const count = (rows, keyOf) => { const m = {}; rows.forEach(r => { const k = keyOf(r) || 'Not recorded'; m[k] = (m[k] || 0) + 1; }); return Object.entries(m).sort((a, b) => b[1] - a[1]); };
+  const fold = (rows, max = 7) => (rows.length > max ? rows.slice(0, max - 1).concat([['Other', rows.slice(max - 1).reduce((s, r) => s + r[1], 0)]]) : rows);
+  const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+  // Who is new: a client's first ever shoot falls in this slice.
+  const firsts = new Map([...clientMap().values()].map(c => [c.key, c.projects.filter(p => p.status !== 'Cancelled' && p.status !== 'Inquiry').map(p => p.date).filter(Boolean).sort()[0] || '']));
+  const slice = bks.map(b => {
+    const ps = live.filter(p => p.date >= b.from && p.date <= b.to), m = moneyStats(b.from, b.to);
+    const keys = [...new Set(ps.filter(p => !p.marketing).map(clientKey).filter(Boolean))];
+    const fresh = keys.filter(k => { const f = firsts.get(k); return f >= b.from && f <= b.to; }).length;
+    return { ...b, v: { rev: m.revenue, exp: m.spent, prof: m.profit, paid: ps.filter(p => !p.marketing).length, free: ps.filter(p => p.marketing).length, fresh, back: keys.length - fresh } };
+  });
+  const newC = slice.reduce((s, b) => s + b.v.fresh, 0), backC = slice.reduce((s, b) => s + b.v.back, 0);
+  const days = DAYS.map((d, i) => ({ label: d, title: d, v: { n: live.filter(p => parseDay(p.date).getDay() === i).length } }));
+  const LEAD = [['< 1 wk', 'Under a week', 0, 6], ['1–2 wk', '1 to 2 weeks', 7, 13], ['2–4 wk', '2 to 4 weeks', 14, 29], ['1–3 mo', '1 to 3 months', 30, 89], ['3+ mo', '3 months or more', 90, 1e9]];
+  const leads = live.filter(p => /^\d{4}-\d{2}-\d{2}/.test(p.created) && p.created.slice(0, 10) <= p.date).map(p => daysBetween(p.created.slice(0, 10), p.date));
+  const leadB = LEAD.map(([label, title, a, b]) => ({ label, title, v: { n: leads.filter(d => d >= a && d <= b).length } }));
+  const created = db.projects.filter(p => inRange(String(p.created).slice(0, 10)));
+  const won = created.filter(p => !['Inquiry', 'Cancelled'].includes(p.status)).length;
+  const stages = ['Inquiry', 'Booked', 'Shot', 'Editing'].map(sg => ({ k: sg, v: db.projects.filter(p => p.status === sg).length }))
+    .concat([{ k: 'Delivered', v: db.projects.filter(p => p.status === 'Delivered' && inRange(p.date)).length, sub: per }]);
+  const its = db.items.filter(i => live.some(p => p.id === i.projectId));
+  const lateN = its.filter(i => i.status !== 'Delivered' && i.due && i.due < t).length;
+  const byItem = {}; its.forEach(i => { const k = i.type || i.title || 'Other'; byItem[k] = byItem[k] || { n: 0, q: 0 }; byItem[k].n++; byItem[k].q += i.qty; });
+  const done = live.filter(p => p.status === 'Delivered'), posted = done.filter(p => p.posted).length;
+  const free = live.filter(p => p.marketing), freePosted = free.filter(p => p.posted).length;
+  const typeRev = {}; paidP.forEach(p => { typeRev[p.type || 'Other'] = (typeRev[p.type || 'Other'] || 0) + p.price; });
+  const owed = paidP.reduce((sum, p) => sum + balance(p), 0);
+  const panel = (title, sub, body, cls = '') => `<section class="panel ${cls}"><div class="ph"><h2>${title}</h2>${sub ? `<small>${sub}</small>` : ''}</div>${body}</section>`;
+  return [`${per} · ${plural(live.length, 'shoot')} · ${plural(newC, 'new client')}`, `
+  <div class="kpis">
+    <div class="kpi"><small>Shoots</small><b>${live.length}</b><em>${paidP.length} paid · ${free.length} free</em></div>
+    <div class="kpi"><small>Revenue</small><b>${money(st.revenue)}</b><em>${pct(st.profit, st.revenue)}% kept as profit</em></div>
+    <div class="kpi"><small>Clients</small><b>${newC + backC}</b><em>${newC} new · ${backC} came back</em></div>
+    <div class="kpi"><small>Inquiries won</small><b>${pct(won, created.length)}%</b><em>${won} of ${plural(created.length, 'new project')}</em></div>
+  </div>
+  <h2 class="chart-h">Money</h2>
+  ${panel('Revenue, spent &amp; profit', `${per} · by ${bucketUnit(bks).toLowerCase()}`, moneyChart(slice))}
+  <div class="cols2">
+    ${panel('Collected so far', `shoots ${per.toLowerCase()}`, stackBar([{ name: 'Collected', v: paidP.reduce((sum, p) => sum + Math.min(p.paid, p.price), 0), c: 'var(--accent)' }, { name: 'Still owed', v: owed, c: GRAY }], 'No paid shoots in this period', money))}
+    ${panel('Revenue by shoot type', per, barList(Object.entries(typeRev).sort((a, b) => b[1] - a[1]).map(([k, v]) => ({ k, v, sub: `${plural(paidP.filter(p => (p.type || 'Other') === k).length, 'shoot')} · average ${money(v / paidP.filter(p => (p.type || 'Other') === k).length)}` })), 'No paid shoots in this period'))}
+  </div>
+  <h2 class="chart-h">Shoots &amp; bookings</h2>
+  ${panel('Shoots', `${per} · by ${bucketUnit(bks).toLowerCase()}`, columnChart(slice, [{ k: 'paid', name: 'Paid', color: 'var(--accent)' }, { k: 'free', name: 'Free for your page', color: GRAY }], { stack: true, label: 'Shoots over time', h: 200 }))}
+  <div class="cols2">
+    ${panel('Pipeline right now', 'projects at each stage', barList(stages.map(x => ({ k: x.k, v: x.v, sub: x.sub || '', attr: 'data-go="projects/board" role="button" tabindex="0"' })), '', nf))}
+    ${panel('Inquiries → bookings', `new projects ${per.toLowerCase()}`, stackBar([{ name: 'Booked', v: won, c: 'var(--accent)' }, { name: 'Still an inquiry', v: created.filter(p => p.status === 'Inquiry').length, c: GRAY }, { name: 'Cancelled', v: created.filter(p => p.status === 'Cancelled').length, c: GRAY2 }], 'No new projects in this period'))}
+  </div>
+  <div class="cols2">
+    ${panel('Busiest days', `shoots by weekday · ${per.toLowerCase()}`, live.length ? columnChart(days, [{ k: 'n', name: 'Shoots', color: 'var(--accent)' }], { w: half, h: 190, label: 'Shoots by weekday' }) : '<div class="empty">No shoots in this period</div>')}
+    ${panel('How far ahead clients book', 'from adding the booking to the shoot', leads.length ? columnChart(leadB, [{ k: 'n', name: 'Bookings', color: 'var(--accent)' }], { w: half, h: 190, label: 'Booking lead time' }) : '<div class="empty">No bookings with both dates in this period</div>')}
+  </div>
+  <div class="cols2">
+    ${panel('Shoot types', per, barList(fold(count(live, p => p.type)).map(([k, v]) => ({ k, v, sub: pct(v, live.length) + '%' })), 'No shoots in this period', nf))}
+    ${panel('Where clients come from', per, barList(fold(count(live, p => p.source)).map(([k, v]) => ({ k, v, sub: pct(v, live.length) + '%' })), 'No shoots in this period', nf))}
+  </div>
+  <h2 class="chart-h">Clients</h2>
+  ${panel('New and returning clients', `${per} · by ${bucketUnit(bks).toLowerCase()}`, columnChart(slice, [{ k: 'fresh', name: 'New', color: 'var(--accent)' }, { k: 'back', name: 'Came back', color: GRAY }], { stack: true, label: 'New and returning clients', h: 200 }))}
+  <h2 class="chart-h">Deliveries &amp; posting</h2>
+  <div class="cols2">
+    ${panel('Deliverables', `for shoots ${per.toLowerCase()}${lateN ? ` · <span class="warn-t">${lateN} late</span>` : ''}`, stackBar(ITEM_STATUSES.slice().reverse().map(sg => ({ name: sg, v: its.filter(i => i.status === sg).length, c: { Delivered: 'var(--ok)', Editing: 'var(--warn)', Pending: GRAY }[sg] })), 'Nothing listed to deliver for shoots in this period'))}
+    ${panel('What you deliver most', per, barList(Object.entries(byItem).sort((a, b) => b[1].n - a[1].n).slice(0, 7).map(([k, o]) => ({ k, v: o.n, sub: `${o.q.toLocaleString('en-US')} in total` })), 'Nothing listed to deliver for shoots in this period', nf))}
+  </div>
+  <div class="cols2">
+    ${panel('Posted on your page', `delivered shoots ${per.toLowerCase()}`, stackBar([{ name: 'Posted', v: posted, c: 'var(--accent)' }, { name: 'Not posted yet', v: done.length - posted, c: GRAY }], 'No delivered shoots in this period'))}
+    ${panel('Free shoots posted', per.toLowerCase(), stackBar([{ name: 'Posted', v: freePosted, c: 'var(--accent)' }, { name: 'Not posted yet', v: free.length - freePosted, c: GRAY }], 'No free shoots in this period'))}
+  </div>`];
 }
 function moneyReport() {
   const [from, to] = periodRange();
@@ -676,30 +812,10 @@ function moneyReport() {
   const owed = db.projects.filter(p => p.status !== 'Cancelled' && !p.marketing && balance(p) > 0).sort((a, b) => balance(b) - balance(a));
   const owedTotal = owed.reduce((s, p) => s + balance(p), 0) + db.retainers.filter(retDue).reduce((s, r) => s + r.fee, 0);
 
-  // Last 12 months: revenue and spending as bars, profit as a line, all on one AED axis.
-  const months = [];
-  const d0 = new Date(); d0.setDate(1);
-  for (let k = 11; k >= 0; k--) { const d = new Date(d0); d.setMonth(d0.getMonth() - k); months.push(ymd(d).slice(0, 7)); }
-  const series = months.map(mk => { const m = moneyStats(mk + '-01', monthEnd(mk)); return { mk, rev: m.revenue, exp: m.spent, prof: m.profit }; });
-  const hi = Math.max(1, ...series.map(s => Math.max(s.rev, s.exp)));
-  const lo = Math.min(0, ...series.map(s => s.prof));
-  const nice = (() => { const p = Math.pow(10, Math.floor(Math.log10(hi))); return Math.ceil(hi / p) * p; })();
-  const W = 720, H = 280, L = 56, R = 10, T = 16, B = 30, cw = (W - L - R) / 12, bw = Math.min(18, cw / 3);
-  const yv = v => T + (H - T - B) * (1 - (v - lo) / (nice - lo));
-  const ticks = [0, .25, .5, .75, 1].map(f => lo + (nice - lo) * f);
-  const k = v => (Math.abs(v) >= 1000 ? (v / 1000).toLocaleString('en-US', { maximumFractionDigits: 1 }) + 'k' : Math.round(v));
-  const line = series.map((s, i) => `${L + i * cw + cw / 2},${yv(s.prof)}`).join(' ');
-  const svg = `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Revenue, spending and profit for the last 12 months">
-    <g class="grid">${ticks.map(v => `<line x1="${L}" x2="${W - R}" y1="${yv(v)}" y2="${yv(v)}"/><text x="${L - 8}" y="${yv(v) + 4}" text-anchor="end">${k(v)}</text>`).join('')}
-      ${lo < 0 ? `<line x1="${L}" x2="${W - R}" y1="${yv(0)}" y2="${yv(0)}" class="zero"/>` : ''}</g>
-    ${series.map((s, i) => { const x = L + i * cw + cw / 2, m = MONTHS[+s.mk.slice(5) - 1]; return `
-      <rect x="${x - bw - 1}" y="${yv(s.rev)}" width="${bw}" height="${Math.max(0, yv(0) - yv(s.rev))}" rx="2" fill="var(--accent)"/>
-      <rect x="${x + 1}" y="${yv(s.exp)}" width="${bw}" height="${Math.max(0, yv(0) - yv(s.exp))}" rx="2" fill="#ffffff40"/>
-      <text x="${x}" y="${H - 10}" text-anchor="middle">${m}</text>
-      <rect class="hit" x="${L + i * cw}" y="${T}" width="${cw}" height="${H - T - B}"><title>${m} ${s.mk.slice(0, 4)}\nRevenue ${money(s.rev)}\nSpent ${money(s.exp)}\nProfit ${money(s.prof)}</title></rect>`; }).join('')}
-    <polyline points="${line}" fill="none" stroke="var(--fg)" stroke-width="2" stroke-linejoin="round" pointer-events="none"/>
-    ${series.map((s, i) => `<circle cx="${L + i * cw + cw / 2}" cy="${yv(s.prof)}" r="4" fill="var(--fg)" stroke="var(--panel)" stroke-width="2" pointer-events="none"/>`).join('')}
-  </svg>`;
+  // Revenue and spending as columns, profit as a line, on one axis, sliced to fit the period.
+  const series = periodBuckets().map(b => { const m = moneyStats(b.from, b.to); return { ...b, v: { rev: m.revenue, exp: m.spent, prof: m.profit } }; });
+  const svg = moneyChart(series);
+  const unit = bucketUnit(series);
 
   // Where the money goes
   const cats = {};
@@ -721,7 +837,6 @@ function moneyReport() {
   st.live.forEach(p => crewOf(p.id).forEach(c => { const key = c.name || c.role; people[key] = people[key] || { v: 0, n: 0, roles: new Set() }; people[key].v += c.fee; people[key].n++; people[key].roles.add(c.role); }));
   const avg = st.paidP.length ? st.paidP.reduce((s, p) => s + p.price, 0) / st.paidP.length : 0;
   const per = PERIODS;
-  const nf = v => Math.round(v).toLocaleString('en-US');
   ui.moneySeries = series;
   return [`${per[ui.period]} · ${st.paidP.length} paid project${st.paidP.length === 1 ? '' : 's'} · average ${money(avg)}`, `
   <div class="kpis">
@@ -731,15 +846,15 @@ function moneyReport() {
     <button class="kpi" data-jump="m-collect"><small>Still to collect</small><b>${money(owedTotal)}</b><em>${owed.length} client${owed.length === 1 ? '' : 's'} owe you</em></button>
   </div>
   <section class="panel" id="m-collect">${collectPanel()}</section>
-  <section class="panel"><div class="ph"><h2>Last 12 months</h2><div class="legend" style="margin:0"><span><i style="background:var(--accent)"></i>Revenue</span><span><i style="background:#ffffff40"></i>Spent</span><span><i class="ln"></i>Profit</span></div></div>${svg}
-    <p class="fine">Hover a month to see its numbers.</p></section>
+  <section class="panel"><div class="ph"><h2>Revenue, spent &amp; profit</h2><small>${per[ui.period]} · by ${unit.toLowerCase()}</small></div>${svg}
+    <p class="fine">Hover a ${unit.toLowerCase()} to see its numbers. More charts under <a class="linkbtn" href="#money/charts">Charts</a>.</p></section>
   <div class="cols">
     <section class="panel"><div class="ph"><h2>Where the money goes</h2><small>${money(st.spent)} · ${per[ui.period]}</small></div>
       ${barList(spendRows, 'No spending in this period. Log rentals, AI tools, editing and more with “+ Add expense”.')}</section>
-    <section class="panel"><div class="ph"><h2>Month by month</h2><button class="linkbtn" data-money-csv>Download CSV</button></div>
-      <div class="tbl rep"><table><thead><tr><th>Month</th><th class="n">Revenue</th><th class="n">Spent</th><th class="n">Profit</th></tr></thead><tbody>
-      ${series.slice().reverse().map(s => `<tr><td>${MONTHS[+s.mk.slice(5) - 1]} ${s.mk.slice(2, 4)}</td><td class="n">${nf(s.rev)}</td><td class="n">${nf(s.exp)}</td><td class="n ${s.prof < 0 ? 'neg' : ''}">${nf(s.prof)}</td></tr>`).join('')}
-      <tr class="tot"><td>12 months</td><td class="n">${nf(series.reduce((a, s) => a + s.rev, 0))}</td><td class="n">${nf(series.reduce((a, s) => a + s.exp, 0))}</td><td class="n">${nf(series.reduce((a, s) => a + s.prof, 0))}</td></tr></tbody></table></div>
+    <section class="panel"><div class="ph"><h2>${unit} by ${unit.toLowerCase()}</h2><button class="linkbtn" data-money-csv>Download CSV</button></div>
+      <div class="tbl rep"><table><thead><tr><th>${unit}</th><th class="n">Revenue</th><th class="n">Spent</th><th class="n">Profit</th></tr></thead><tbody>
+      ${series.filter(s => s.v.rev || s.v.exp).reverse().map(s => `<tr><td>${esc(s.title)}</td><td class="n">${nf(s.v.rev)}</td><td class="n">${nf(s.v.exp)}</td><td class="n ${s.v.prof < 0 ? 'neg' : ''}">${nf(s.v.prof)}</td></tr>`).join('') || '<tr><td colspan="4" class="fine">Nothing in this period yet.</td></tr>'}
+      <tr class="tot"><td>${per[ui.period]}</td><td class="n">${nf(series.reduce((a, s) => a + s.v.rev, 0))}</td><td class="n">${nf(series.reduce((a, s) => a + s.v.exp, 0))}</td><td class="n">${nf(series.reduce((a, s) => a + s.v.prof, 0))}</td></tr></tbody></table></div>
       <p class="fine">Amounts in ${esc(setting('currency'))}.</p></section>
   </div>
   <div class="cols">
@@ -783,7 +898,7 @@ function expensesBody() {
   </div>`];
 }
 function exportMoneyCsv() {
-  const rows = [['Month', 'Revenue', 'Spent', 'Profit']].concat((ui.moneySeries || []).map(s => [monthName(s.mk), s.rev, s.exp, s.prof]));
+  const rows = [[bucketUnit(ui.moneySeries || []), 'Revenue', 'Spent', 'Profit']].concat((ui.moneySeries || []).map(s => [`"${s.title}"`, s.v.rev, s.v.exp, s.v.prof]));
   download(`studio-money-${today()}.csv`, '﻿' + rows.map(r => r.join(',')).join('\n'), 'text/csv');
 }
 
@@ -1750,6 +1865,9 @@ document.addEventListener('keydown', e => {
 });
 $('#syncBtn').addEventListener('click', () => pull());
 window.addEventListener('hashchange', route);
+// Charts are drawn to the screen's width; redraw them when it changes (turning the phone).
+let lastW = innerWidth, resizeT;
+window.addEventListener('resize', () => { clearTimeout(resizeT); resizeT = setTimeout(() => { if (innerWidth !== lastW && ui.view === 'money' && cfg) { lastW = innerWidth; ui.keepScroll = true; render(); } }, 250); });
 window.addEventListener('online', () => pull(true));
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') pull(true); });
 

@@ -283,6 +283,18 @@ button.kpi:hover{border-color:var(--accent)}
 .chart .grid line.zero{stroke:var(--line2)}
 .chart .hit{fill:transparent;cursor:crosshair}
 .chart .hit:hover{fill:#ffffff0a}
+.chart-key{margin:0 0 6px}
+.chart-h{font-size:12px;color:var(--accent2);letter-spacing:.2em;margin:10px 0 -8px}
+.cols2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;align-items:start}
+@media (max-width:960px){.cols2{grid-template-columns:1fr}}
+.sbar{display:flex;gap:2px;height:14px;margin:6px 0 14px}
+.sbar i{min-width:3px}
+.sbar i:first-child{border-radius:4px 0 0 4px}.sbar i:last-child{border-radius:0 4px 4px 0}.sbar i:only-child{border-radius:4px}
+.skey{display:flex;flex-direction:column;gap:8px}
+.skey div{display:grid;grid-template-columns:10px minmax(0,1fr) auto 44px;gap:10px;align-items:center;font-size:13.5px}
+.skey i{width:10px;height:10px;border-radius:3px}
+.skey b{font-variant-numeric:tabular-nums;font-weight:600}
+.skey small{color:var(--faint);text-align:right;font-variant-numeric:tabular-nums}
 .legend i.ln{height:2px;border-radius:1px;background:var(--fg);vertical-align:3px}
 .vacts{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .bar-row[role=button]{cursor:pointer}
