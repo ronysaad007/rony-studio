@@ -26,6 +26,7 @@ const store = {
 
 const ICONS = {
   home: '<path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/>',
+  today: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/><circle cx="12" cy="15.5" r="2" fill="currentColor"/>',
   folder: '<path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
   calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
   wallet: '<path d="M3 7a2 2 0 0 1 2-2h13v4"/><rect x="3" y="7" width="18" height="13" rx="2"/><circle cx="16.5" cy="13.5" r="1.5"/>',
@@ -48,7 +49,7 @@ let cfg = store.get(CFG_KEY, null);
 let db = store.get(CACHE_KEY, { projects: [], items: [], settings: [] });
 let queue = store.get(QUEUE_KEY, []);
 let lastSync = store.get('rs.lastSync', null);
-const ui = { view: 'home', filter: 'active', dfilter: 'all', dShowDone: false, q: '', client: '', calMonth: null, calSel: null, period: 'year', countdown: null };
+const ui = { view: 'today', mtab: 'report', filter: 'active', dfilter: 'soon', dShowDone: false, q: '', client: '', calMonth: null, calSel: null, period: 'year', countdown: null };
 
 const STATUSES = ['Inquiry', 'Booked', 'Shot', 'Editing', 'Delivered', 'Cancelled'];
 const FLOW = ['Booked', 'Shot', 'Editing', 'Delivered'];
@@ -209,7 +210,7 @@ async function pull(silent) {
       settings: (j.settings || []).map(s => ({ id: String(s.id), value: String(s.value ?? '') })),
     };
     lastSync = Date.now(); store.set('rs.lastSync', lastSync);
-    saveLocal(); setSync('ok', 'Synced'); render();
+    saveLocal(); setSync('ok', 'Synced'); ui.keepScroll = true; render();
   } catch (e) {
     setSync('off', 'Offline');
     if (!silent) toast(e.message, true);
@@ -384,48 +385,57 @@ function projectRow(p) {
 const clientNames = () => [...new Set(db.projects.map(p => p.client).filter(Boolean))].sort();
 
 // ───────────────────────────── views ─────────────────────────────
-function renderHome() {
-  const t = today(), now = new Date();
-  const upcoming = db.projects.filter(p => p.date >= t && !['Cancelled', 'Inquiry'].includes(p.status) && p.status !== 'Delivered')
-    .sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
+// One page for "what do I do today": money to collect, deliveries, shoots, loose ends, then the month.
+function renderToday() {
+  const t = today(), now = new Date(), week = addDays(t, 7);
+  const dueNow = p => ['Shot', 'Editing', 'Delivered'].includes(p.status) || (p.date && p.date < t);
+  const owed = db.projects.filter(p => p.status !== 'Cancelled' && !p.marketing && balance(p) > 0)
+    .sort((a, b) => dueNow(b) - dueNow(a) || dayOf(a).localeCompare(dayOf(b)));
+  const rets = db.retainers.filter(retDue);
+  const owedTotal = owed.reduce((s, p) => s + balance(p), 0) + rets.reduce((s, r) => s + r.fee, 0);
+  const nowTotal = owed.filter(dueNow).reduce((s, p) => s + balance(p), 0) + rets.reduce((s, r) => s + r.fee, 0);
+  const collectRow = p => `<div class="alert ${dueNow(p) ? 'bad' : 'info'}" data-open="${p.id}" data-ptab="money" role="button" tabindex="0"><i class="sev"></i>
+    <div><b>${money(balance(p))} · ${esc(p.title)}</b><small>${esc(p.client)} · ${p.paid ? `paid ${money(p.paid)} of ${money(p.price)}` : 'nothing paid yet'} · ${p.date ? (dueNow(p) ? 'shot ' : 'shoot ') + fmtDate(p.date) : 'no date'}</small></div>
+    <div class="acts">${dueNow(p) ? waBtn(p, 'pay', 'Remind') : ''}<button class="btn sm" data-paid="${p.id}">Mark paid</button></div></div>`;
+  const retRow = r => `<div class="alert bad" data-ret-open="${r.id}" role="button" tabindex="0"><i class="sev"></i><div><b>${money(r.fee)} · ${esc(r.client)} monthly fee</b><small>${monthName(thisMonth())} not received yet</small></div><div class="acts">${waRetBtn(r)}<button class="btn sm" data-ret-month="${r.id}" data-m="${thisMonth()}">Mark paid</button></div></div>`;
+  const grp = (label, rows) => (rows.length ? `<div class="alert-group">${label} <span class="n">${rows.length}</span></div>${rows.join('')}` : '');
+  const collect = owed.length || rets.length ? `<div class="alerts">${grp('Due now', owed.filter(dueNow).map(collectRow).concat(rets.map(retRow)))}${grp('Booked, not shot yet', owed.filter(p => !dueNow(p)).map(collectRow))}</div>` : '<p class="allclear">Everyone has paid.</p>';
+
+  const upcoming = db.projects.filter(p => p.date >= t && !['Cancelled', 'Inquiry', 'Delivered'].includes(p.status)).sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
   const next = upcoming[0];
-  const monthKey = t.slice(0, 7);
-  const inMonth = db.projects.filter(p => p.status !== 'Cancelled' && !p.marketing && dayOf(p).slice(0, 7) === monthKey);
-  const activeRet = db.retainers.filter(r => r.status === 'Active' && (!r.start || r.start.slice(0, 7) <= monthKey));
-  const outstanding = db.projects.filter(p => p.status !== 'Cancelled' && !p.marketing).reduce((s, p) => s + balance(p), 0)
-    + db.retainers.filter(retDue).reduce((s, r) => s + r.fee, 0);
-  const retNote = activeRet.length ? ` + ${activeRet.length} retainer${activeRet.length === 1 ? '' : 's'}` : '';
-  const all = alerts();
+  const openItems = db.items.filter(i => i.status !== 'Delivered' && project(i.projectId) && project(i.projectId).status !== 'Cancelled');
+  const late = openItems.filter(i => i.due && i.due < t).length, soon = openItems.filter(i => i.due && i.due >= t && i.due <= week).length;
+  const rest = alerts().filter(a => !['Collect payment', 'Overdue deliveries', 'Due soon'].includes(a.g));
   const hour = now.getHours();
   const greet = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
-  const openItems = db.items.filter(i => i.status !== 'Delivered' && project(i.projectId) && project(i.projectId).status !== 'Cancelled')
-    .sort((a, b) => (a.due || '9999').localeCompare(b.due || '9999')).slice(0, 7);
+  const loc = p => (p.location ? (/^https?:/.test(p.location) ? `<a class="linkbtn" href="${esc(p.location)}" target="_blank" rel="noopener">Open location ↗</a>` : esc(p.location)) : '');
 
   $('#view').innerHTML = `
   <div class="vhead"><div><p class="eyebrow">${DAYS[now.getDay()]} ${now.getDate()} ${MONTHS[now.getMonth()]} ${now.getFullYear()}</p>
     <h1>${greet}, <span class="a">${esc(setting('businessName').split(' ')[0])}</span></h1></div></div>
-  ${next ? `<section class="hero">
-      <div><div class="label">Next shoot · ${esc(next.code)}</div>
-        <h3>${esc(next.title)}</h3>
-        <div class="meta"><span>${fmtDate(next.date)}${next.time ? ' · ' + fmtTime(next.time) : ''}</span><span>${esc(next.client)}</span>${next.location ? `<span>${/^https?:/.test(next.location) ? `<a class="linkbtn" href="${esc(next.location)}" target="_blank" rel="noopener">Open location ↗</a>` : esc(next.location)}</span>` : ''}</div>
-        <div class="acts">${waBtn(next, 'remind', 'Send reminder')}<button class="btn sm" data-open="${next.id}">Open project</button></div></div>
-      <div class="cd" id="cd" data-at="${next.date}T${next.time || '00:00'}"></div>
-    </section>` : `<section class="hero"><div><div class="label">Next shoot</div><h3>Nothing booked ahead</h3><div class="meta">Add your next booking and it shows up here with a countdown.</div><div class="acts"><button class="btn primary sm" data-add>+ New booking</button></div></div></section>`}
   <div class="kpis">
-    <button class="kpi" data-go="money"><small>Booked this month</small><b>${money(inMonth.reduce((s, p) => s + p.price, 0) + activeRet.reduce((s, r) => s + r.fee, 0))}</b><em>${inMonth.length} project${inMonth.length === 1 ? '' : 's'}${retNote}</em></button>
-    <button class="kpi" data-go="money"><small>Collected this month</small><b>${money(inMonth.reduce((s, p) => s + Math.min(p.paid, p.price || p.paid), 0) + retIncome(monthKey))}</b><em>shoots and retainers</em></button>
-    <button class="kpi" data-filter="unpaid"><small>Waiting to collect</small><b class="acc">${money(outstanding)}</b><em>all open balances</em></button>
-    <button class="kpi" data-filter="active"><small>Active projects</small><b>${db.projects.filter(p => ACTIVE.includes(p.status)).length}</b><em>${upcoming.length} shoot${upcoming.length === 1 ? '' : 's'} coming up</em></button>
+    <button class="kpi" data-jump="t-money"><small>To collect</small><b class="acc">${money(nowTotal)}</b><em>${owedTotal > nowTotal ? `due now · ${money(owedTotal)} in total` : 'due now'}</em></button>
+    <button class="kpi" data-jump="t-deliver"><small>Late deliveries</small><b class="${late ? 'bad' : ''}">${late}</b><em>past their due date</em></button>
+    <button class="kpi" data-jump="t-deliver"><small>Due this week</small><b>${soon}</b><em>by ${fmtDate(week)}</em></button>
+    <button class="kpi" data-jump="t-shoots"><small>Next shoot</small><b>${next ? (next.date === t ? 'Today' : next.date === addDays(t, 1) ? 'Tomorrow' : 'in ' + daysBetween(t, next.date) + ' d') : '—'}</b><em>${next ? esc(next.client) + (next.time ? ' · ' + fmtTime(next.time) : '') : 'nothing booked ahead'}</em></button>
   </div>
   <div class="cols">
-    <section class="panel"><div class="ph"><h2>Needs your attention</h2><small>${all.length} item${all.length === 1 ? '' : 's'}</small></div>${renderAlerts(all, 8)}</section>
     <div class="stack">
-      <section class="panel"><div class="ph"><h2>Coming up</h2><a class="linkbtn" href="#calendar">Calendar →</a></div>
-        ${upcoming.length ? `<div class="mini">${upcoming.slice(0, 6).map(p => `<div class="mini-it" data-open="${p.id}"><div><b>${esc(p.title)}</b><small>${esc(p.client)}</small></div><div class="r">${fmtDate(p.date)}<small>${p.date === t ? 'Today' : 'in ' + daysBetween(t, p.date) + ' d'}${p.time ? ' · ' + fmtTime(p.time) : ''}</small></div></div>`).join('')}</div>` : '<div class="empty">No upcoming shoots</div>'}</section>
-      <section class="panel"><div class="ph"><h2>To deliver</h2><a class="linkbtn" href="#deliver">${db.items.filter(i => i.status !== 'Delivered' && project(i.projectId) && project(i.projectId).status !== 'Cancelled').length} open · See all →</a></div>
-        ${openItems.length ? `<div class="mini">${openItems.map(i => { const p = project(i.projectId); return `<div class="mini-it" data-open="${p.id}"><div><b>${esc(itemLabel(i))}</b><small>${esc(p.title)}${i.type && i.title ? ' · ' + esc(i.type) : ''} · ${i.status}${i.notes ? ' · ' + esc(i.notes) : ''}</small></div><div class="r ${i.due && i.due < t ? 'late' : ''}">${i.due ? fmtDate(i.due) : '<small>No due date</small>'}</div></div>`; }).join('')}</div>` : '<div class="empty">Everything is delivered</div>'}</section>
+      <section class="panel" id="t-money"><div class="ph"><h2>Money to collect</h2><a class="linkbtn" href="#money">${money(owedTotal)} · Money →</a></div>${collect}</section>
+      <section class="panel" id="t-deliver">${deliverSection()}</section>
     </div>
-  </div>`;
+    <div class="stack">
+      <section class="panel" id="t-shoots"><div class="ph"><h2>Upcoming shoots</h2><button class="linkbtn" data-jump="t-cal">Calendar ↓</button></div>
+        ${next ? `<div class="hero sm"><div><div class="label">Next · ${esc(next.code)}</div><h3>${esc(next.title)}</h3>
+          <div class="meta"><span>${fmtDate(next.date)}${next.time ? ' · ' + fmtTime(next.time) : ''}</span><span>${esc(next.client)}</span>${next.location ? `<span>${loc(next)}</span>` : ''}</div>
+          <div class="acts">${waBtn(next, 'remind', 'Send reminder')}<button class="btn sm" data-open="${next.id}">Open</button></div></div>
+          <div class="cd" id="cd" data-at="${next.date}T${next.time || '00:00'}"></div></div>` : '<div class="empty"><b>Nothing booked ahead</b><button class="btn primary sm" data-add style="margin-top:10px">+ New booking</button></div>'}
+        ${upcoming.length > 1 ? `<div class="mini">${upcoming.slice(1, 8).map(p => `<div class="mini-it" data-open="${p.id}" role="button" tabindex="0"><div><b>${esc(p.title)}</b><small>${esc(p.client)}${p.location && !/^https?:/.test(p.location) ? ' · ' + esc(p.location) : ''}</small></div><div class="r">${fmtDate(p.date)}<small>${p.date === t ? 'Today' : 'in ' + daysBetween(t, p.date) + ' d'}${p.time ? ' · ' + fmtTime(p.time) : ''}</small></div></div>`).join('')}</div>` : ''}
+        ${upcoming.length > 8 ? `<a class="linkbtn" href="#projects" data-filter="active">All ${upcoming.length} upcoming →</a>` : ''}</section>
+      ${rest.length ? `<section class="panel"><div class="ph"><h2>Also needs you</h2><small>${rest.length} item${rest.length === 1 ? '' : 's'}</small></div>${renderAlerts(rest)}</section>` : ''}
+    </div>
+  </div>
+  <section class="panel" id="t-cal">${calendarSection()}</section>`;
   tickCountdown();
 }
 function tickCountdown() {
@@ -496,7 +506,7 @@ function drawRows() {
   $('#rows').innerHTML = rows.length ? rows.map(projectRow).join('') : `<div class="empty"><b>No projects here</b>Try another filter, or add a booking.</div>`;
 }
 
-function renderCalendar() {
+function calendarSection() {
   const t = today();
   if (!ui.calMonth) ui.calMonth = t.slice(0, 7);
   const [y, m] = ui.calMonth.split('-').map(Number);
@@ -519,16 +529,14 @@ function renderCalendar() {
   }
   const monthShoots = db.projects.filter(p => p.date.startsWith(ui.calMonth) && p.status !== 'Cancelled');
   const sel = ui.calSel && byDay[ui.calSel];
-  $('#view').innerHTML = `
-  <div class="vhead"><div><p class="eyebrow">${monthShoots.length} shoot${monthShoots.length === 1 ? '' : 's'} this month</p><h1>Calen<span class="o">dar</span></h1></div>
+  return `
+  <div class="ph"><div><h2>Calendar</h2><small>${monthShoots.length} shoot${monthShoots.length === 1 ? '' : 's'} in ${MONTHS[m - 1]}</small></div>
     <div class="calnav"><button class="x" data-cal="-1" aria-label="Previous month">‹</button><span class="ttl">${MONTHS[m - 1]} ${y}</span><button class="x" data-cal="1" aria-label="Next month">›</button><button class="btn sm ghost" data-cal="0">Today</button></div></div>
-  <section class="panel">
     <div class="cal">${DAYS.map(d => `<div class="cal-h">${d}</div>`).join('')}${cells}</div>
     <div class="legend"><span><i style="background:var(--accent)"></i>Paid shoot</span><span><i style="background:#ffffff33"></i>Free shoot</span><span><i style="border:1px solid var(--info)"></i>Delivery due</span></div>
-  </section>
-  ${ui.calSel ? `<section class="panel"><div class="ph"><h2>${fmtDate(ui.calSel)}</h2><button class="btn sm primary" data-add-day="${ui.calSel}">+ Book this day</button></div>
+  ${ui.calSel ? `<div class="cal-day"><div class="ph"><h2>${fmtDate(ui.calSel)}</h2><button class="btn sm primary" data-add-day="${ui.calSel}">+ Book this day</button></div>
     ${sel ? `<div class="mini">${sel.map(e => `<div class="mini-it" data-open="${e.p.id}"><div><b>${esc(e.kind === 'due' ? e.label : e.p.title)}</b><small>${esc(e.p.client)}${e.p.location && !/^https?:/.test(e.p.location) ? ' · ' + esc(e.p.location) : ''}</small></div><div class="r">${e.kind === 'due' ? '<span class="tag t-info">Delivery</span>' : `<span class="tag ${STATUS_TAG[e.p.status]}">${e.p.status}</span>`}<small>${e.p.time && e.kind !== 'due' ? fmtTime(e.p.time) : ''}</small></div></div>`).join('')}</div>` : '<div class="empty"><b>Free day</b>Nothing booked.</div>'}
-  </section>` : ''}`;
+  </div>` : ''}`;
 }
 
 function periodRange() {
@@ -561,7 +569,21 @@ function barList(rows, empty) {
   const top = Math.max(1, ...rows.map(r => r.v));
   return `<div class="bars">${rows.map(r => `<div class="bar-row" ${r.attr || ''}><span>${esc(r.k)}</span><b>${money(r.v)}</b><div class="track"><i style="width:${(r.v / top * 100).toFixed(1)}%"></i></div><small>${r.sub || ''}</small></div>`).join('')}</div>`;
 }
+const PERIODS = { month: 'This month', '3m': '3 months', year: 'This year', all: 'All time' };
+const MTABS = { report: 'Report', docs: 'Invoices & quotes', expenses: 'Expenses', team: 'Team' };
+// Money: the report, plus invoices & quotes, expenses and team as sub-tabs (#money/docs, #money/expenses, #money/team).
 function renderMoney() {
+  const tab = MTABS[ui.mtab] ? ui.mtab : 'report', dated = ['report', 'expenses'].includes(tab);
+  const [eyebrow, body] = { report: moneyReport, docs: docsBody, expenses: expensesBody, team: teamBody }[tab]();
+  $('#view').innerHTML = `
+  <div class="vhead"><div><p class="eyebrow">${eyebrow}</p><h1>Mo<span class="o">ney</span></h1></div>
+    ${dated ? `<div class="vacts"><div class="seg" role="group" aria-label="Period">${Object.entries(PERIODS).map(([key, v]) => `<button data-period="${key}" aria-pressed="${ui.period === key}">${v}</button>`).join('')}</div>
+    <button class="btn primary sm" data-exp-new>+ Add expense</button></div>` : ''}</div>
+  <nav class="tabs" aria-label="Money">${Object.entries(MTABS).map(([k, v]) => `<a href="#money${k === 'report' ? '' : '/' + k}" ${k === tab ? 'aria-current="page"' : ''}>${v}</a>`).join('')}</nav>
+  ${body}`;
+  if (tab === 'docs') $('#dq').addEventListener('input', e => { const q = e.target.value.toLowerCase(); $$('#dlist .doc-it').forEach(r => { r.hidden = !r.textContent.toLowerCase().includes(q); }); });
+}
+function moneyReport() {
   const [from, to] = periodRange();
   const st = moneyStats(from, to);
   const pct = (a, b) => (b ? Math.round(a / b * 100) : 0);
@@ -597,7 +619,7 @@ function renderMoney() {
   const cats = {};
   st.ledger.forEach(x => { cats[x.category] = (cats[x.category] || { v: 0, n: 0 }); cats[x.category].v += x.amount; cats[x.category].n++; });
   const spendRows = [
-    st.team && { k: 'Team', v: st.team, sub: `${pct(st.team, st.spent)}% of spending · see Team →`, attr: 'data-go="team" role="button" tabindex="0"' },
+    st.team && { k: 'Team', v: st.team, sub: `${pct(st.team, st.spent)}% of spending · see Team →`, attr: 'data-go="money/team" role="button" tabindex="0"' },
     ...Object.entries(cats).map(([c, o]) => ({ k: c, v: o.v, sub: `${pct(o.v, st.spent)}% · ${o.n} expense${o.n === 1 ? '' : 's'}` })),
     st.other && { k: 'Other project costs', v: st.other, sub: `${pct(st.other, st.spent)}% · entered inside projects` },
   ].filter(Boolean).sort((a, b) => b.v - a.v);
@@ -612,14 +634,10 @@ function renderMoney() {
   const people = {};
   st.live.forEach(p => crewOf(p.id).forEach(c => { const key = c.name || c.role; people[key] = people[key] || { v: 0, n: 0, roles: new Set() }; people[key].v += c.fee; people[key].n++; people[key].roles.add(c.role); }));
   const avg = st.paidP.length ? st.paidP.reduce((s, p) => s + p.price, 0) / st.paidP.length : 0;
-  const per = { month: 'This month', '3m': '3 months', year: 'This year', all: 'All time' };
+  const per = PERIODS;
   const nf = v => Math.round(v).toLocaleString('en-US');
-  const catOf = x => `<span class="tag t-mute">${esc(x.category)}</span>`;
-
-  $('#view').innerHTML = `
-  <div class="vhead"><div><p class="eyebrow">${per[ui.period]} · ${st.paidP.length} paid project${st.paidP.length === 1 ? '' : 's'} · average ${money(avg)}</p><h1>Mo<span class="o">ney</span></h1></div>
-    <div class="vacts"><div class="seg" role="group" aria-label="Period">${Object.entries(per).map(([key, v]) => `<button data-period="${key}" aria-pressed="${ui.period === key}">${v}</button>`).join('')}</div>
-    <button class="btn primary sm" data-exp-new>+ Add expense</button></div></div>
+  ui.moneySeries = series;
+  return [`${per[ui.period]} · ${st.paidP.length} paid project${st.paidP.length === 1 ? '' : 's'} · average ${money(avg)}`, `
   <div class="kpis">
     <div class="kpi"><small>Revenue</small><b>${money(st.revenue)}</b><em>collected ${money(st.collected)} · ${pct(st.collected, st.revenue)}%</em></div>
     <div class="kpi"><small>Spent</small><b>${money(st.spent)}</b><em>team ${money(st.team)} · other ${money(st.spent - st.team)}</em></div>
@@ -645,17 +663,37 @@ function renderMoney() {
   </div>
   <div class="cols">
     <section class="panel"><div class="ph"><h2>By shoot type</h2><small>${per[ui.period]}</small></div>${barList(types, 'No paid projects in this period')}</section>
-    <section class="panel"><div class="ph"><h2>Team spending</h2><a class="linkbtn" href="#team">Team →</a></div>
+    <section class="panel"><div class="ph"><h2>Team spending</h2><a class="linkbtn" href="#money/team">Team →</a></div>
       ${barList(Object.entries(people).sort((a, b) => b[1].v - a[1].v).map(([n, o]) => ({ k: n, v: o.v, sub: `${[...o.roles].join(', ')} · ${o.n} job${o.n === 1 ? '' : 's'}` })), 'No team costs in this period. Add who worked with you inside each project.')}</section>
   </div>
   <div class="cols">
-    <section class="panel"><div class="ph"><h2>Expenses</h2><small>${st.ledger.length} logged · ${money(st.logged)}</small></div>
-      ${st.ledger.length ? `<div class="mini">${st.ledger.slice().sort((a, b) => b.date.localeCompare(a.date)).map(x => { const p = project(x.projectId); return `<div class="mini-it" data-exp-open="${x.id}"><div><b>${esc(x.note || x.category)}</b><small>${fmtDate(x.date)} · ${catOf(x)}${p ? ' · ' + esc(p.title) : ''}</small></div><div class="r"><b>${money(x.amount)}</b></div></div>`; }).join('')}</div>`
-        : '<div class="empty"><b>No expenses logged</b>Rentals, AI tools, editing, travel, subscriptions… add them here to see where your money goes.</div>'}</section>
+    <section class="panel"><div class="ph"><h2>Latest expenses</h2><a class="linkbtn" href="#money/expenses">${st.ledger.length} · All expenses →</a></div>
+      ${st.ledger.length ? expenseList(st.ledger.slice().sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5))
+        : '<div class="empty"><b>No expenses logged</b>Rentals, AI tools, editing, travel, subscriptions… add them to see where your money goes.</div>'}</section>
     <section class="panel"><div class="ph"><h2>Waiting to collect</h2><small>${money(owedTotal)} total</small></div>
       ${owed.length ? `<div class="mini">${owed.map(p => `<div class="mini-it" data-open="${p.id}"><div><b>${esc(p.title)}</b><small>${esc(p.client)} · ${p.date ? fmtDate(p.date) : 'no date'} · paid ${money(p.paid)} of ${money(p.price)}</small></div><div class="r"><b>${money(balance(p))}</b></div></div>`).join('')}</div>` : '<p class="allclear">Everyone has paid.</p>'}</section>
-  </div>`;
-  ui.moneySeries = series;
+  </div>`];
+}
+const expenseList = rows => `<div class="mini">${rows.map(x => { const p = project(x.projectId); return `<div class="mini-it" data-exp-open="${x.id}" role="button" tabindex="0"><div><b>${esc(x.note || x.category)}</b><small>${fmtDate(x.date)} · <span class="tag t-mute">${esc(x.category)}</span>${p ? ' · ' + esc(p.title) : ''}</small></div><div class="r"><b>${money(x.amount)}</b></div></div>`; }).join('')}</div>`;
+function expensesBody() {
+  const [from, to] = periodRange();
+  const st = moneyStats(from, to), rows = st.ledger.slice().sort((a, b) => b.date.localeCompare(a.date));
+  const cats = {};
+  rows.forEach(x => { cats[x.category] = cats[x.category] || { v: 0, n: 0 }; cats[x.category].v += x.amount; cats[x.category].n++; });
+  const general = rows.filter(x => !x.projectId).reduce((s, x) => s + x.amount, 0);
+  return [`${PERIODS[ui.period]} · ${rows.length} expense${rows.length === 1 ? '' : 's'} logged`, `
+  <div class="kpis">
+    <div class="kpi"><small>Logged</small><b class="acc">${money(st.logged)}</b><em>${rows.length} expense${rows.length === 1 ? '' : 's'}</em></div>
+    <div class="kpi"><small>For shoots</small><b>${money(st.logged - general)}</b><em>linked to a project</em></div>
+    <div class="kpi"><small>General business</small><b>${money(general)}</b><em>tools, gear, subscriptions…</em></div>
+    <div class="kpi"><small>All spending</small><b>${money(st.spent)}</b><em>with team and project costs</em></div>
+  </div>
+  <div class="cols">
+    <section class="panel"><div class="ph"><h2>Expenses</h2><small>${PERIODS[ui.period]}</small></div>
+      ${rows.length ? expenseList(rows) : '<div class="empty"><b>No expenses logged</b>Rentals, AI tools, editing, travel, subscriptions… add them with “+ Add expense”.</div>'}</section>
+    <section class="panel"><div class="ph"><h2>By category</h2><small>${money(st.logged)}</small></div>
+      ${barList(Object.entries(cats).sort((a, b) => b[1].v - a[1].v).map(([c, o]) => ({ k: c, v: o.v, sub: `${o.n} expense${o.n === 1 ? '' : 's'}` })), 'Nothing in this period')}</section>
+  </div>`];
 }
 function exportMoneyCsv() {
   const rows = [['Month', 'Revenue', 'Spent', 'Profit']].concat((ui.moneySeries || []).map(s => [monthName(s.mk), s.rev, s.exp, s.prof]));
@@ -715,18 +753,22 @@ function clientMap() {
   return map;
 }
 function renderClients() {
-  const rows = [...clientMap().values()].sort((a, b) => b.value - a.value || b.last.localeCompare(a.last));
+  const all = [...clientMap().values()].sort((a, b) => b.value - a.value || b.last.localeCompare(a.last));
+  const F = { all: () => true, owes: c => c.owed > 0, back: c => c.n > 1 };
+  const labels = { all: 'All', owes: 'Owe you', back: 'Came back' };
+  const f = F[ui.cfilter] ? ui.cfilter : 'all';
+  const rows = all.filter(F[f]);
   $('#view').innerHTML = `
-  <div class="vhead"><div><p class="eyebrow">${rows.length} clients · ${rows.filter(c => c.n > 1).length} came back</p><h1>Cli<span class="o">ents</span></h1></div></div>
-  <input type="search" id="cq" placeholder="Search clients…" aria-label="Search clients">
-  <div class="tbl"><table><thead><tr><th>Client</th><th>Phone</th><th class="n">Projects</th><th class="n">Total value</th><th class="n">Still owes</th><th>Last shoot</th><th></th></tr></thead>
-  <tbody id="ctb">${rows.map(c => `<tr data-client-open="${esc(c.key)}" tabindex="0" data-s="${esc((c.name + ' ' + c.phone + ' ' + c.instagram + ' ' + c.email).toLowerCase())}">
-    <td><b>${esc(c.name)}</b>${c.instagram ? `<br><small class="code">${esc(c.instagram)}</small>` : ''}</td>
-    <td>${esc(c.phone) || '<span class="code">—</span>'}</td><td class="n">${c.n}</td><td class="n">${money(c.value)}</td>
-    <td class="n">${c.owed ? `<span class="tag t-bad">${money(c.owed)}</span>` : '<span class="code">—</span>'}</td>
-    <td>${c.last ? fmtDate(c.last) : ''}</td>
-    <td>${waNumber(c.phone) ? `<a class="btn sm wa" href="https://wa.me/${waNumber(c.phone)}" target="_blank" rel="noopener" data-stop>WhatsApp</a>` : ''}</td></tr>`).join('')}</tbody></table></div>`;
-  $('#cq').addEventListener('input', e => { const q = e.target.value.toLowerCase(); $$('#ctb tr').forEach(tr => { tr.hidden = !tr.dataset.s.includes(q); }); });
+  <div class="vhead"><div><p class="eyebrow">${all.length} clients · ${all.filter(F.back).length} came back</p><h1>Cli<span class="o">ents</span></h1></div></div>
+  <div class="filters"><input type="search" id="cq" placeholder="Search name, phone, Instagram…" aria-label="Search clients" value="${esc(ui.cq || '')}"></div>
+  <div class="chips" role="group" aria-label="Filter">${Object.keys(labels).map(k => `<button class="chip" data-cfilter="${k}" aria-pressed="${f === k}">${labels[k]}<span class="n">${all.filter(F[k]).length}</span></button>`).join('')}</div>
+  <div class="rows" id="ctb">${rows.map(c => `<div class="row cl" data-client-open="${esc(c.key)}" role="button" tabindex="0" data-s="${esc((c.name + ' ' + c.phone + ' ' + c.instagram + ' ' + c.email).toLowerCase())}">
+    <div class="main"><strong>${esc(c.name)}</strong><small>${[esc(c.phone), c.instagram && esc(c.instagram), `${c.n} project${c.n === 1 ? '' : 's'}`, c.last && 'last ' + fmtDate(c.last)].filter(Boolean).join(' · ')}</small></div>
+    <div class="acts">${waNumber(c.phone) ? `<a class="btn sm wa" href="https://wa.me/${waNumber(c.phone)}" target="_blank" rel="noopener" data-stop>WhatsApp</a>` : ''}</div>
+    <div class="money"><b>${money(c.value)}</b>${c.owed ? `<span class="tag t-bad">owes ${money(c.owed)}</span>` : c.value ? '<span class="tag t-ok">Paid up</span>' : ''}</div></div>`).join('') || '<div class="empty"><b>No clients here</b>Clients appear as soon as you add a booking for them.</div>'}</div>`;
+  const filter = () => { const q = (ui.cq || '').toLowerCase(); $$('#ctb .row').forEach(r => { r.hidden = !r.dataset.s.includes(q); }); };
+  $('#cq').addEventListener('input', e => { ui.cq = e.target.value; filter(); });
+  filter();
 }
 // A client's profile: contact, money, every project, what's still to deliver, and their invoices & quotes.
 function openClient(key) {
@@ -762,7 +804,7 @@ function openClient(key) {
     </section>
     ${open.length ? `<section class="dr-sec"><h3>Still to deliver</h3><div class="mini">${open.map(i => `<div class="mini-it" data-open="${i.projectId}"><div><b>${esc(itemLabel(i))}</b><small>${esc(project(i.projectId).title)}${i.due ? ' · due ' + fmtDate(i.due) : ''}</small></div><div class="r"><span class="tag t-warn">${i.status}</span></div></div>`).join('')}</div></section>` : ''}
     <section class="dr-sec"><h3>Invoices &amp; quotes</h3>
-      ${docs.length ? `<div class="mini">${docs.map(d => docRow(d)).join('')}</div>` : '<p class="fine">None yet. Open one of their projects and press Invoice or Quotation.</p>'}
+      ${docs.length ? `<div class="mini">${docs.map(d => docRow(d)).join('')}</div>` : '<p class="fine">None yet. Open one of their projects and make one on its Invoices &amp; quotes tab.</p>'}
     </section>
   </div>
   <div class="dr-foot"><button type="button" class="btn sm ghost" data-client-projects="${esc(c.name)}">Show in Projects</button><span class="sp"></span></div>`;
@@ -785,7 +827,7 @@ function deliverGroups() {
 }
 function deliverItem(i) {
   const t = today(), done = i.status === 'Delivered', late = !done && i.due && i.due < t;
-  const hint = !i.due ? 'set a due date' : done ? '' : late ? `${daysBetween(i.due, t)} days late` : i.due === t ? 'due today' : `in ${daysBetween(t, i.due)} days`;
+  const hint = !i.due ? 'set a due date' : done ? '' : late ? `${daysBetween(i.due, t)} days late` : i.due === t ? 'due today' : i.due === addDays(t, 1) ? 'due tomorrow' : `in ${daysBetween(t, i.due)} days`;
   const when = `<input type="date" class="dl-date" data-item-due="${i.id}" value="${esc(i.due)}" aria-label="Due date"><small>${hint}</small>`;
   return `<div class="dl-it ${late ? 'late' : ''} ${done ? 'done' : ''}">
     <button class="dl-check" type="button" data-item-st="${i.id}" data-to="${done ? 'Pending' : 'Delivered'}" aria-label="${done ? 'Mark not delivered' : 'Mark delivered'}: ${esc(itemLabel(i))}">${done ? '✓' : ''}</button>
@@ -793,43 +835,37 @@ function deliverItem(i) {
     <span class="steps" role="group" aria-label="Status">${ITEM_STATUSES.map(s => `<button type="button" data-item-st="${i.id}" data-to="${s}" class="${s === i.status ? 'cur' : ITEM_STATUSES.indexOf(s) < ITEM_STATUSES.indexOf(i.status) ? 'done' : ''}" aria-pressed="${s === i.status}">${s}</button>`).join('')}</span>
     <div class="due">${when}</div></div>`;
 }
-function renderDeliver() {
+// Deliveries on Today: late and due this week by default, grouped by project, with inline status steps.
+function deliverSection() {
   const t = today(), week = addDays(t, 7);
-  const F = { all: () => true, late: i => i.due && i.due < t, week: i => i.due && i.due <= week, nodate: i => !i.due };
-  const keep = F[ui.dfilter] || F.all;
+  const F = { soon: i => i.due && i.due <= week, nodate: i => !i.due, all: () => true };
+  const f = F[ui.dfilter] ? ui.dfilter : 'soon', keep = F[f];
   const groups = deliverGroups();
   const open = groups.flatMap(g => g.open);
   const counts = Object.fromEntries(Object.keys(F).map(k => [k, open.filter(F[k]).length]));
-  const labels = { all: 'Everything', late: 'Late', week: 'Due this week', nodate: 'No date' };
+  const labels = { soon: 'Late & this week', nodate: 'No date', all: 'Everything' };
   const shown = groups.map(g => ({ ...g, show: (ui.dShowDone ? g.its : g.open).filter(i => i.status === 'Delivered' || keep(i)) }))
-    .filter(g => ui.dfilter === 'all' || g.show.some(i => i.status !== 'Delivered'));
+    .filter(g => g.show.some(i => i.status !== 'Delivered') || (f !== 'nodate' && (g.allDone || g.empty)));
   const typeOpts = list('itemTypes').map(o => `<option>${esc(o)}</option>`).join('');
-  $('#view').innerHTML = `
-  <div class="vhead"><div><p class="eyebrow">${open.length} thing${open.length === 1 ? '' : 's'} left for ${groups.filter(g => g.open.length).length} project${groups.filter(g => g.open.length).length === 1 ? '' : 's'}</p><h1>To de<span class="o">liver</span></h1></div></div>
-  <div class="kpis">
-    <button class="kpi" data-dfilter="late"><small>Late</small><b class="${counts.late ? 'acc' : ''}">${counts.late}</b><em>past their due date</em></button>
-    <button class="kpi" data-dfilter="week"><small>Due this week</small><b>${counts.week}</b><em>by ${fmtDate(week)}</em></button>
-    <button class="kpi" data-dfilter="nodate"><small>No due date</small><b>${counts.nodate}</b><em>give them a date</em></button>
-    <button class="kpi" data-dfilter="all"><small>Waiting on you</small><b>${groups.filter(g => g.empty || g.allDone).length}</b><em>projects to list or close</em></button>
-  </div>
-  <div class="chips" role="group" aria-label="Filter">${Object.keys(labels).map(k => `<button class="chip" data-dfilter="${k}" aria-pressed="${(ui.dfilter || 'all') === k}">${labels[k]}<span class="n">${counts[k]}</span></button>`).join('')}
+  return `<div class="ph"><h2>Deliveries</h2><small>${open.length} left for ${groups.filter(g => g.open.length).length} project${groups.filter(g => g.open.length).length === 1 ? '' : 's'}</small></div>
+  <div class="chips" role="group" aria-label="Filter">${Object.keys(labels).map(k => `<button class="chip" data-dfilter="${k}" aria-pressed="${f === k}">${labels[k]}<span class="n">${counts[k]}</span></button>`).join('')}
     <button class="chip" data-dshowdone aria-pressed="${!!ui.dShowDone}">Show delivered</button></div>
-  ${shown.length ? shown.map(({ p, its, open: left, show, allDone, empty }) => {
+  ${shown.length ? `<div class="dl-groups">${shown.map(({ p, its, open: left, show, allDone, empty }) => {
     const done = its.length - left.length;
-    return `<section class="panel dl-group">
-      <div class="dl-head" data-open="${p.id}" role="button" tabindex="0"><div><b>${esc(p.title || p.client)}</b><small>${esc(p.client)} · ${p.date ? 'shot ' + fmtDate(p.date) : 'no shoot date'} · ${p.status}</small></div>
+    return `<div class="dl-group">
+      <div class="dl-head" data-open="${p.id}" data-ptab="items" role="button" tabindex="0"><div><b>${esc(p.title || p.client)}</b><small>${esc(p.client)} · ${p.date ? 'shot ' + fmtDate(p.date) : 'no shoot date'} · ${p.status}</small></div>
         ${its.length ? `<div class="dl-prog"><span>${done} of ${its.length} delivered</span><div class="track"><i style="width:${(done / its.length * 100).toFixed(0)}%"></i></div></div>` : ''}</div>
       ${show.length ? `<div class="dl-list">${show.map(deliverItem).join('')}</div>` : ''}
       ${allDone ? `<div class="dl-done">Everything is delivered. <button class="btn sm" data-status="${p.id}" data-to="Delivered">Close project as Delivered</button>${waBtn(p, 'ready', 'Send “files ready”')}</div>` : ''}
       ${empty ? '<p class="fine">Nothing listed yet. Add what you owe this client so nothing is forgotten.</p>' : ''}
-      <form class="dl-add" data-add-item="${p.id}" autocomplete="off"><select name="type" aria-label="Type">${typeOpts}</select>
+      ${f === 'all' || empty ? `<form class="dl-add" data-add-item="${p.id}" autocomplete="off"><select name="type" aria-label="Type">${typeOpts}</select>
         <input name="title" placeholder="Add something to deliver…" aria-label="What to deliver"><input name="qty" type="number" inputmode="numeric" min="1" value="1" aria-label="How many">
-        <button class="btn sm" type="submit">Add</button></form>
-    </section>`; }).join('')
-    : `<div class="empty"><b>${ui.dfilter && ui.dfilter !== 'all' ? 'Nothing here' : 'All delivered'}</b>${ui.dfilter && ui.dfilter !== 'all' ? 'Try another filter.' : 'Nothing is waiting to be delivered. Well done.'}</div>`}`;
+        <button class="btn sm" type="submit">Add</button></form>` : ''}
+    </div>`; }).join('')}</div>`
+    : `<p class="allclear">${f === 'soon' ? 'Nothing late or due this week.' : f === 'nodate' ? 'Every deliverable has a date.' : 'Nothing is waiting to be delivered. Well done.'}</p>`}`;
 }
 
-function renderTeam() {
+function teamBody() {
   const live = db.crew.filter(c => { const p = project(c.projectId); return p && p.status !== 'Cancelled'; });
   const unpaid = live.filter(c => !c.paidOn && c.fee).sort((a, b) => dayOf(project(a.projectId)).localeCompare(dayOf(project(b.projectId))));
   const y = today().slice(0, 4);
@@ -844,8 +880,7 @@ function renderTeam() {
   });
   const rows = [...people.values()].sort((a, b) => b.owed - a.owed || b.n - a.n);
   const owedTotal = unpaid.reduce((s, c) => s + c.fee, 0);
-  $('#view').innerHTML = `
-  <div class="vhead"><div><p class="eyebrow">${rows.length} ${rows.length === 1 ? 'person' : 'people'} worked with you</p><h1>Te<span class="o">am</span></h1></div></div>
+  return [`${rows.length} ${rows.length === 1 ? 'person' : 'people'} worked with you`, `
   <div class="kpis">
     <div class="kpi"><small>You owe your team</small><b class="acc">${money(owedTotal)}</b><em>${unpaid.length} unpaid job${unpaid.length === 1 ? '' : 's'}</em></div>
     <div class="kpi"><small>Paid this year</small><b>${money(live.filter(c => c.paidOn.startsWith(y)).reduce((s, c) => s + c.fee, 0))}</b><em>to your team in ${y}</em></div>
@@ -857,7 +892,7 @@ function renderTeam() {
   ${rows.length ? `<div class="tbl"><table><thead><tr><th>Name</th><th>Role</th><th class="n">Jobs</th><th class="n">Paid</th><th class="n">Still owed</th><th>Last job</th></tr></thead><tbody>
     ${rows.map(m => `<tr><td><b>${esc(m.name)}</b></td><td>${esc([...m.roles].join(', '))}</td><td class="n">${m.n}</td><td class="n">${money(m.paid)}</td>
       <td class="n">${m.owed ? `<span class="tag t-warn">${money(m.owed)}</span>` : '<span class="code">—</span>'}</td><td>${m.last ? fmtDate(m.last) : ''}</td></tr>`).join('')}</tbody></table></div>`
-    : '<div class="empty"><b>No team yet</b>Open a project and add who worked with you under “Team”, with what you pay them.</div>'}`;
+    : '<div class="empty"><b>No team yet</b>Open a project and add who worked with you on its Money tab, with what you pay them.</div>'}`];
 }
 
 function renderRetainers() {
@@ -940,7 +975,8 @@ function openMore() {
   const m = $('#modal');
   const link = (v, ic, label, sub) => `<a class="more-it" href="#${v}" data-more-go="${v}">${icon(ic)}<span><b>${label}</b><small>${sub}</small></span></a>`;
   m.innerHTML = `<div class="modal-card"><div class="ph" style="margin:0"><h2 id="modalTitle">More</h2><button type="button" class="x" data-close aria-label="Close">✕</button></div>
-    <nav class="more">${link('retainers', 'repeat', 'Retainers', 'Monthly social media clients')}${link('team', 'camera', 'Team', 'Who worked with you and what you owe')}${link('clients', 'users', 'Clients', 'Everyone you shot for, with their profile')}${link('docs', 'doc', 'Invoices & quotes', 'Every invoice and quotation you made')}${link('settings', 'gear', 'Settings', 'Invoice details, lists, backup')}</nav></div>`;
+    <nav class="more">${link('retainers', 'repeat', 'Retainers', 'Monthly social media clients')}${link('settings', 'gear', 'Settings', 'Invoice details, lists, backup')}</nav>
+    <p class="fine">Invoices &amp; quotes, expenses and your team are under Money.</p></div>`;
   showLayer(m);
 }
 
@@ -991,28 +1027,31 @@ function renderSettings() {
 }
 
 // ───────────────────────────── project drawer ─────────────────────────────
-function openProject(id, preset) {
+// One form, split into tabs: every field stays inside #pForm and is only hidden, so Save keeps all of them.
+const PTABS = { overview: 'Overview', items: 'Deliverables', money: 'Money', docs: 'Invoices<span class="lg"> &amp; quotes</span>', notes: 'Notes' };
+function openProject(id, preset, tab) {
   const isNew = !id;
   const p = isNew ? normP({ id: uid(), code: nextCode(), status: 'Booked', created: today(), ...preset }) : { ...project(id) };
-  if (!p) return;
+  if (!p.id) return;
   let items = isNew ? (preset && preset._items) || [] : itemsOf(p.id).map(i => ({ ...i }));
   let crew = isNew ? [] : crewOf(p.id).map(c => ({ ...c }));
   const opt = (arr, v) => [...new Set([...arr, v].filter(Boolean))].map(o => `<option ${o === v ? 'selected' : ''}>${esc(o)}</option>`).join('');
   const dr = $('#drawer');
-  const [pay, payCls] = payState(p);
   dr.innerHTML = `
   <div class="dr-head"><div class="t"><span class="code">${esc(p.code)}${isNew ? ' · New' : ''}</span><h2 id="drawerTitle">${esc(p.title || 'New booking')}</h2>
-    <div class="sub"><span class="tag ${STATUS_TAG[p.status]}">${p.status}</span><span class="tag ${payCls}">${pay}</span></div></div>
+    <div class="sub" id="pSub"></div></div>
     <button class="x" data-close aria-label="Close">✕</button></div>
+  ${isNew ? '' : `<nav class="tabs dr-tabs" role="tablist" aria-label="Project">${Object.entries(PTABS).map(([k, v]) => `<button type="button" role="tab" data-ptab-btn="${k}">${v}</button>`).join('')}</nav>`}
   <form class="dr-body" id="pForm" autocomplete="off">
-    <section class="dr-sec"><h3>Client ${isNew || !p.client ? '' : `<button type="button" class="linkbtn" data-client-open="${esc(clientKey(p))}">Profile ›</button>`}</h3>
+    <section class="dr-sec" data-pt="overview" data-new><h3>Client ${isNew || !p.client ? '' : `<button type="button" class="linkbtn" data-client-open="${esc(clientKey(p))}">Profile ›</button>`}</h3>
       <div class="grid2"><label class="field"><span>Name</span><input id="f-client" list="dl-clients" value="${esc(p.client)}" required></label>
-        <label class="field"><span>Phone / WhatsApp</span><input id="f-phone" type="tel" value="${esc(p.phone)}" placeholder="+971 5x xxx xxxx"></label>
-        <label class="field"><span>Instagram</span><input id="f-instagram" value="${esc(p.instagram)}" placeholder="@handle"></label>
-        <label class="field"><span>Email</span><input id="f-email" type="email" value="${esc(p.email)}"></label></div>
-      <label class="field"><span>Found you through</span><select id="f-source"><option value="">—</option>${opt(list('sources'), p.source)}</select></label>
+        <label class="field"><span>Phone / WhatsApp</span><input id="f-phone" type="tel" value="${esc(p.phone)}" placeholder="+971 5x xxx xxxx"></label></div>
+      <details class="more-f"><summary>Instagram, email, found you through</summary>
+        <div class="grid2"><label class="field"><span>Instagram</span><input id="f-instagram" value="${esc(p.instagram)}" placeholder="@handle"></label>
+          <label class="field"><span>Email</span><input id="f-email" type="email" value="${esc(p.email)}"></label></div>
+        <label class="field"><span>Found you through</span><select id="f-source"><option value="">—</option>${opt(list('sources'), p.source)}</select></label></details>
     </section>
-    <section class="dr-sec"><h3>Shoot</h3>
+    <section class="dr-sec" data-pt="overview" data-new><h3>Shoot</h3>
       <label class="field"><span>Project name</span><input id="f-title" value="${esc(p.title)}" placeholder="e.g. Wedding – Sara & Karim"></label>
       <div class="grid2"><label class="field"><span>Type</span><select id="f-type">${opt(list('types'), p.type)}</select></label>
         <label class="field"><span>Status</span><select id="f-status">${opt(STATUSES, p.status)}</select></label>
@@ -1022,45 +1061,72 @@ function openProject(id, preset) {
       <div class="grid2"><label class="check"><input type="checkbox" id="f-marketing" ${p.marketing ? 'checked' : ''}> Free shoot for my page</label>
         <label class="check"><input type="checkbox" id="f-posted" ${p.posted ? 'checked' : ''}> Posted on social</label></div>
     </section>
-    <section class="dr-sec"><h3>Money</h3>
+    <section class="dr-sec" data-pt="overview"><h3>Money <button type="button" class="linkbtn" data-ptab-go="money">Details ›</button></h3>
+      <div class="money-sum" id="ovMoney"></div>
+      <div class="wa-menu" id="ovActs"></div>
+    </section>
+    <section class="dr-sec" data-pt="items"><h3>Deliverables <button type="button" class="linkbtn" id="itAdd">+ Add</button></h3>
+      <div class="items" id="items"></div>
+    </section>
+    <section class="dr-sec" data-pt="money" data-new><h3>Money</h3>
       <div class="grid3"><label class="field"><span>Price</span><input id="f-price" type="number" inputmode="decimal" min="0" value="${p.price || ''}"></label>
         <label class="field"><span>Received</span><input id="f-paid" type="number" inputmode="decimal" min="0" value="${p.paid || ''}"></label>
         <label class="field"><span>Other expenses</span><input id="f-expenses" type="number" inputmode="decimal" min="0" value="${p.expenses || ''}"></label></div>
       <div class="money-sum" id="moneySum"></div>
-      <div id="linkedExp"></div>
-      <div class="payrow"><input id="payAmt" type="number" inputmode="decimal" min="0" placeholder="Add a payment you received"><button type="button" class="btn sm" id="payAdd">Add payment</button><button type="button" class="btn sm ghost" id="payFull">Paid in full</button></div>
+      ${isNew ? '' : `<div id="linkedExp"></div>
+      <div class="payrow"><input id="payAmt" type="number" inputmode="decimal" min="0" placeholder="Add a payment you received"><button type="button" class="btn sm" id="payAdd">Add payment</button><button type="button" class="btn sm ghost" id="payFull">Paid in full</button></div>`}
     </section>
-    <section class="dr-sec"><h3>Team <button type="button" class="linkbtn" id="crAdd">+ Add</button></h3>
+    <section class="dr-sec" data-pt="money"><h3>Team <button type="button" class="linkbtn" id="crAdd">+ Add</button></h3>
       <div class="items" id="crew"></div>
       <datalist id="dl-crew">${[...new Set(db.crew.map(c => c.name).filter(Boolean))].sort().map(n => `<option value="${esc(n)}">`).join('')}</datalist>
     </section>
-    <section class="dr-sec"><h3>Deliverables <button type="button" class="linkbtn" id="itAdd">+ Add</button></h3>
-      <div class="items" id="items"></div>
+    <section class="dr-sec" data-pt="docs"><h3>Invoices &amp; quotes</h3>
+      <div class="wa-menu"><button class="btn sm" id="pInvoice" type="button">+ Invoice</button><button class="btn sm" id="pQuote" type="button">+ Quotation</button></div>
+      <div id="pDocs"></div>
+      <p class="fine">Each one is made from the saved project, so save your changes first.</p>
     </section>
-    <section class="dr-sec"><h3>Files & notes</h3>
+    <section class="dr-sec" data-pt="notes" data-new><h3>Files & notes</h3>
       <label class="field"><span>Delivery / Drive link</span><input id="f-drive" type="url" value="${esc(p.drive)}" placeholder="https://drive.google.com/…"></label>
       <label class="field"><span>Notes</span><textarea id="f-notes" rows="4">${esc(p.notes)}</textarea></label>
     </section>
-    ${isNew ? '' : `<section class="dr-sec"><h3>Invoices &amp; quotes</h3>${docsOf(p.id).length ? `<div class="mini">${docsOf(p.id).map(d => docRow(d)).join('')}</div>` : '<p class="fine">Press Invoice or Quotation below. Each one you make is saved here.</p>'}</section>`}
-    ${waNumber(p.phone) && !isNew ? `<section class="dr-sec"><h3>WhatsApp</h3><div class="wa-menu">${waBtn(p, 'confirm', 'Confirm booking')}${waBtn(p, 'remind', 'Shoot reminder')}${balance(p) ? waBtn(p, 'pay', 'Payment reminder') : ''}${waBtn(p, 'ready', 'Files ready')}</div></section>` : ''}
     <datalist id="dl-clients">${clientNames().map(c => `<option value="${esc(c)}">`).join('')}</datalist>
   </form>
   <div class="dr-foot">
     <button class="btn primary" id="pSave" type="button">${isNew ? 'Add booking' : 'Save changes'}</button>
-    ${isNew ? '' : '<button class="btn sm" id="pQuote" type="button">Quotation</button><button class="btn sm" id="pInvoice" type="button">Invoice</button>'}
     <span class="sp"></span>
     ${isNew ? '' : '<button class="btn sm danger" id="pDel" type="button">Delete</button>'}
   </div>`;
   showLayer(dr);
 
   const val = k => $('#f-' + k).value.trim();
+  const showTab = k => {
+    tab = PTABS[k] ? k : 'overview';
+    $$('#pForm [data-pt]').forEach(sec => { sec.hidden = isNew ? !('new' in sec.dataset) : sec.dataset.pt !== tab; });
+    $$('[data-ptab-btn]', dr).forEach(b => b.setAttribute('aria-selected', b.dataset.ptabBtn === tab));
+    $('#pForm').scrollTop = 0;
+    const cur = $(`[data-ptab-btn="${tab}"]`, dr); if (cur) cur.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  };
+  $$('[data-ptab-btn],[data-ptab-go]', dr).forEach(b => { b.onclick = () => showTab(b.dataset.ptabBtn || b.dataset.ptabGo); });
   const drawMoney = () => {
     const price = num(val('price')), paid = num(val('paid')), ex = num(val('expenses')) + crew.reduce((s, c) => s + num(c.fee), 0) + linkedCost(p.id);
-
+    const now = normP({ ...p, price, paid, status: $('#f-status').value, marketing: $('#f-marketing').checked });
+    const [pay, payCls] = payState(now), bal = balance(now);
+    $('#pSub').innerHTML = `<span class="tag ${STATUS_TAG[now.status]}">${now.status}</span><span class="tag ${payCls}">${pay}</span>`;
     const lx = expensesOf(p.id);
+    $('#moneySum').innerHTML = `<div><small>Balance</small><b style="color:${price - paid > 0 ? 'var(--bad)' : 'var(--ok)'}">${money(Math.max(0, price - paid))}</b></div><div><small>Profit${crew.length || lx.length ? ' after costs' : ''}</small><b>${money(price - ex)}</b></div><div><small>Margin</small><b>${price ? Math.round((price - ex) / price * 100) : 0}%</b></div>`;
+    if (isNew) return;
     $('#linkedExp').innerHTML = `<div class="linked">${lx.map(x => `<button type="button" class="chip" data-exp-open="${x.id}">${esc(x.note || x.category)} · ${money(x.amount)}</button>`).join('')}<button type="button" class="linkbtn" id="lxAdd">+ Log an expense for this shoot</button></div>`;
     $('#lxAdd').onclick = () => openExpense(null, { projectId: p.id, date: today() }, drawMoney);
-    $('#moneySum').innerHTML = `<div><small>Balance</small><b style="color:${price - paid > 0 ? 'var(--bad)' : 'var(--ok)'}">${money(Math.max(0, price - paid))}</b></div><div><small>Profit${crew.length || lx.length ? ' after costs' : ''}</small><b>${money(price - ex)}</b></div><div><small>Margin</small><b>${price ? Math.round((price - ex) / price * 100) : 0}%</b></div>`;
+    $('#ovMoney').innerHTML = now.marketing ? '<div><small>Free shoot</small><b>For your page</b></div>'
+      : `<div><small>Price</small><b>${money(price)}</b></div><div><small>Received</small><b>${money(paid)}</b></div><div><small>Balance</small><b style="color:${bal ? 'var(--bad)' : 'var(--ok)'}">${money(bal)}</b></div>`;
+    $('#ovActs').innerHTML = `${bal && !now.marketing ? '<button type="button" class="btn sm" id="ovPaid">Mark paid</button>' : ''}${waBtn(p, 'confirm', 'Confirm booking')}${waBtn(p, 'remind', 'Shoot reminder')}${bal ? waBtn(p, 'pay', 'Payment reminder') : ''}${waBtn(p, 'ready', 'Files ready')}`
+      || '<p class="fine">Add a phone number and save to send WhatsApp messages from here.</p>';
+    const mp = $('#ovPaid');
+    if (mp) mp.onclick = () => { $('#f-paid').value = val('price'); drawMoney(); if (save(false)) toast(`${val('client')} marked paid`); };
+  };
+  const drawDocs = () => {
+    const ds = docsOf(p.id);
+    $('#pDocs').innerHTML = ds.length ? `<div class="mini">${ds.map(d => docRow(d)).join('')}</div>` : '<p class="fine">None yet. Each invoice or quotation you make is saved here.</p>';
   };
   const drawItems = () => {
     $('#items').innerHTML = items.length ? items.map((it, i) => `<div class="item di ${it.status === 'Delivered' ? 'done' : ''}" data-i="${i}">
@@ -1080,7 +1146,21 @@ function openProject(id, preset) {
       <label class="check paid-chk"><input type="checkbox" data-ck="paidOn" ${c.paidOn ? 'checked' : ''}> Paid</label>
       <button type="button" class="del" data-crm="${i}" aria-label="Remove">✕</button></div>`).join('') : '<p class="fine">Add who worked with you on this shoot and what you pay them. It counts in your profit and reminds you to pay them.</p>';
   };
-  drawMoney(); drawItems(); drawCrew();
+  const save = close => {
+    if (!val('client')) { showTab('overview'); $('#f-client').focus(); toast('Add the client name first', true); return false; }
+    const out = normP({
+      ...p, client: val('client'), phone: val('phone'), instagram: val('instagram'), email: val('email'), source: $('#f-source').value,
+      title: val('title') || `${$('#f-type').value} – ${val('client')}`, type: $('#f-type').value, status: $('#f-status').value,
+      date: val('date'), time: val('time'), location: val('location'), marketing: $('#f-marketing').checked, posted: $('#f-posted').checked,
+      price: val('price'), paid: val('paid'), expenses: val('expenses'), drive: val('drive'), notes: $('#f-notes').value.trim(),
+    });
+    const its = items.filter(i => i.title.trim()).map(i => normI({ ...i, projectId: out.id, title: i.title.trim(), notes: String(i.notes || '').trim() }));
+    const team = crew.filter(c => c.name.trim() || num(c.fee)).map(c => normC({ ...c, projectId: out.id, name: c.name.trim() }));
+    saveProject(out, its, team);
+    if (close) { closeLayers(); render(); toast(isNew ? 'Booking added' : 'Saved'); } else { Object.assign(p, out); ui.keepScroll = true; render(); }
+    return true;
+  };
+  showTab(tab); drawMoney(); drawItems(); drawCrew(); if (!isNew) drawDocs();
   $('#pForm').addEventListener('input', e => {
     const row = e.target.closest('.item');
     if (row && e.target.dataset.k) {
@@ -1101,30 +1181,20 @@ function openProject(id, preset) {
         if (prev) { c.role = prev.role; c.fee = prev.fee; drawCrew(); }
       }
     }
-    if (['f-price', 'f-paid', 'f-expenses'].includes(e.target.id) || ck === 'fee' || ck === 'name') drawMoney();
+    if (['f-price', 'f-paid', 'f-expenses', 'f-status', 'f-marketing'].includes(e.target.id) || ck === 'fee' || ck === 'name') drawMoney();
   });
   $('#crew').addEventListener('click', e => { const rm = e.target.closest('[data-crm]'); if (rm) { crew.splice(+rm.dataset.crm, 1); drawCrew(); drawMoney(); } });
   $('#crAdd').onclick = () => { crew.push({ id: uid(), projectId: p.id, name: '', role: 'Photographer', fee: 0, paidOn: '', notes: '' }); drawCrew(); $$('#crew .crew-row input[data-ck=name]').pop().focus(); };
   $('#items').addEventListener('click', e => { const rm = e.target.closest('[data-rm]'); if (rm) { items.splice(+rm.dataset.rm, 1); drawItems(); } });
   $('#itAdd').onclick = () => { items.push({ id: uid(), projectId: p.id, type: list('itemTypes')[0] || '', qty: 1, title: '', status: 'Pending', due: '', notes: '' }); drawItems(); $$('#items .item input[data-k=title]').pop().focus(); };
+  $('#pSave').onclick = () => save(true);
+  if (isNew) return;
   $('#payAdd').onclick = () => { const a = num($('#payAmt').value); if (!a) return; $('#f-paid').value = num(val('paid')) + a; $('#payAmt').value = ''; drawMoney(); toast(`${money(a)} added. Save to keep it.`); };
   $('#payFull').onclick = () => { $('#f-paid').value = val('price'); drawMoney(); };
-  $('#pSave').onclick = () => {
-    if (!val('client')) { $('#f-client').focus(); toast('Add the client name first', true); return; }
-    const out = normP({
-      ...p, client: val('client'), phone: val('phone'), instagram: val('instagram'), email: val('email'), source: $('#f-source').value,
-      title: val('title') || `${$('#f-type').value} – ${val('client')}`, type: $('#f-type').value, status: $('#f-status').value,
-      date: val('date'), time: val('time'), location: val('location'), marketing: $('#f-marketing').checked, posted: $('#f-posted').checked,
-      price: val('price'), paid: val('paid'), expenses: val('expenses'), drive: val('drive'), notes: $('#f-notes').value.trim(),
-    });
-    const its = items.filter(i => i.title.trim()).map(i => normI({ ...i, projectId: out.id, title: i.title.trim(), notes: String(i.notes || '').trim() }));
-    const team = crew.filter(c => c.name.trim() || num(c.fee)).map(c => normC({ ...c, projectId: out.id, name: c.name.trim() }));
-    saveProject(out, its, team); closeLayers(); render(); toast(isNew ? 'Booking added' : 'Saved');
-  };
-  const inv = $('#pInvoice'); if (inv) inv.onclick = () => printInvoice(project(p.id));
-  const qt = $('#pQuote'); if (qt) qt.onclick = () => printInvoice(project(p.id), 'quote');
+  $('#pInvoice').onclick = () => { printInvoice(project(p.id)); drawDocs(); };
+  $('#pQuote').onclick = () => { printInvoice(project(p.id), 'quote'); drawDocs(); };
   const del = $('#pDel');
-  if (del) del.onclick = () => {
+  del.onclick = () => {
     if (!del.classList.contains('arm')) { del.classList.add('arm'); del.textContent = 'Tap again to delete'; return; }
     deleteProject(p.id); closeLayers(); render(); toast('Project deleted');
   };
@@ -1261,16 +1331,14 @@ function docRow(d, showClient) {
     <small>${showClient ? esc(d.client) + ' · ' : ''}${fmtDate(d.date)}${p ? ' · ' + esc(p.title) : ''}${d.kind === 'quote' ? ' · total' : ' · balance due'}</small></div>
     <div class="r"><button type="button" class="btn sm" data-doc="${esc(d.id)}">Open PDF</button><button type="button" class="btn sm ghost" data-doc-del="${esc(d.id)}" aria-label="Delete ${esc(d.no)}">Delete</button></div></div>`;
 }
-function renderDocs() {
+function docsBody() {
   const all = [...db.docs].sort((a, b) => b.created.localeCompare(a.created));
   const f = ui.docKind || 'all';
   const list = all.filter(d => f === 'all' || d.kind === f);
-  $('#view').innerHTML = `
-  <div class="vhead"><div><p class="eyebrow">${all.filter(d => d.kind === 'invoice').length} invoices · ${all.filter(d => d.kind === 'quote').length} quotations</p><h1>Invoices <span class="o">&amp; quotes</span></h1></div></div>
+  return [`${all.filter(d => d.kind === 'invoice').length} invoices · ${all.filter(d => d.kind === 'quote').length} quotations`, `
   <div class="chips">${['all', 'invoice', 'quote'].map(k => `<button class="chip" data-doc-kind="${k}" aria-pressed="${f === k}">${k === 'all' ? 'All' : docKind(k) + 's'}</button>`).join('')}</div>
   <input type="search" id="dq" placeholder="Search by client or number…" aria-label="Search invoices and quotes">
-  <section class="panel"><div class="mini" id="dlist">${list.length ? list.map(d => docRow(d, true)).join('') : '<p class="empty">Nothing yet. Open a project and press Invoice or Quotation. Every one you make is kept here.</p>'}</div></section>`;
-  $('#dq').addEventListener('input', e => { const q = e.target.value.toLowerCase(); $$('#dlist .doc-it').forEach(r => { r.hidden = !r.textContent.toLowerCase().includes(q); }); });
+  <section class="panel"><div class="mini" id="dlist">${list.length ? list.map(d => docRow(d, true)).join('') : '<p class="empty">Nothing yet. Open a project and make one on its Invoices &amp; quotes tab. Every one you make is kept here.</p>'}</div></section>`];
 }
 
 // ───────────────────────────── import / export ─────────────────────────────
@@ -1339,20 +1407,28 @@ function importOld(file) {
 }
 
 // ───────────────────────────── routing & events ─────────────────────────────
-const VIEWS = { home: renderHome, projects: renderProjects, deliver: renderDeliver, calendar: renderCalendar, money: renderMoney, retainers: renderRetainers, team: renderTeam, clients: renderClients, docs: renderDocs, settings: renderSettings };
+const VIEWS = { today: renderToday, projects: renderProjects, clients: renderClients, money: renderMoney, retainers: renderRetainers, settings: renderSettings };
+// Old addresses (the installed app may still open them) land on their new home.
+const MOVED = { home: 'today', deliver: 'today', calendar: 'today', docs: 'money/docs', team: 'money/team' };
+const JUMP = { deliver: 't-deliver', calendar: 't-cal' };
 function render() {
   if (!cfg) return;
   clearInterval(ui.countdown);
   const y = window.scrollY;
-  (VIEWS[ui.view] || renderHome)();
+  (VIEWS[ui.view] || renderToday)();
   $$('[data-v]').forEach(a => { if (a.dataset.v === ui.view) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
-  $('#moreBtn').toggleAttribute('aria-current', ['retainers', 'team', 'clients', 'docs', 'settings'].includes(ui.view));
+  $('#moreBtn').toggleAttribute('aria-current', ['retainers', 'settings'].includes(ui.view));
   window.scrollTo(0, ui.keepScroll ? y : 0);
   ui.keepScroll = false;
+  if (ui.jump) { jump(ui.jump); ui.jump = ''; }
 }
+function jump(id) { const el = document.getElementById(id); if (el) el.scrollIntoView({ block: 'start' }); }
 function route() {
-  const v = location.hash.slice(1);
-  ui.view = VIEWS[v] ? v : 'home';
+  let h = location.hash.slice(1);
+  if (MOVED[h]) { ui.jump = JUMP[h] || ''; h = MOVED[h]; history.replaceState(null, '', '#' + h); }
+  const [v, sub] = h.split('/');
+  ui.view = VIEWS[v] ? v : 'today';
+  if (ui.view === 'money') ui.mtab = MTABS[sub] ? sub : 'report';
   render();
 }
 function go(view) { if (location.hash.slice(1) === view) render(); else location.hash = view; }
@@ -1371,6 +1447,8 @@ document.addEventListener('click', e => {
     patchItem(it.id, { status: el.dataset.to });
     toast(`${itemLabel(it)} → ${el.dataset.to}`); return;
   }
+  if ((el = c('[data-jump]'))) { e.preventDefault(); jump(el.dataset.jump); return; }
+  if ((el = c('[data-cfilter]'))) { ui.cfilter = el.dataset.cfilter; ui.keepScroll = true; render(); return; }
   if ((el = c('[data-dfilter]'))) { ui.dfilter = el.dataset.dfilter; ui.keepScroll = true; render(); return; }
   if ((el = c('[data-dshowdone]'))) { ui.dShowDone = !ui.dShowDone; ui.keepScroll = true; render(); return; }
   if ((el = c('[data-item-done]'))) { ui.keepScroll = true; patchItem(el.dataset.itemDone, { status: 'Delivered' }); toast('Delivered'); return; }
@@ -1400,7 +1478,7 @@ document.addEventListener('click', e => {
   }
   if ((el = c('[data-client-projects]'))) { closeLayers(); ui.client = el.dataset.clientProjects; ui.filter = 'all'; ui.q = ''; go('projects'); return; }
   if ((el = c('[data-client]'))) { ui.client = el.dataset.client; ui.filter = 'all'; ui.q = ''; go('projects'); return; }
-  if ((el = c('[data-open]'))) { openProject(el.dataset.open); return; }
+  if ((el = c('[data-open]'))) { openProject(el.dataset.open, null, el.dataset.ptab); return; }
   if ((el = c('[data-ret-new]'))) { openRetainer(); return; }
   if ((el = c('[data-exp-new]'))) { openExpense(null, { date: today() }); return; }
   if ((el = c('[data-exp-open]'))) { e.preventDefault(); openExpense(el.dataset.expOpen, null, $('#drawer').hidden ? null : () => $('#moneySum') && $('#f-price').dispatchEvent(new Event('input', { bubbles: true }))); return; }
@@ -1412,7 +1490,7 @@ document.addEventListener('click', e => {
     const n = +el.dataset.cal;
     if (!n) { ui.calMonth = today().slice(0, 7); ui.calSel = today(); }
     else { const [y, m] = ui.calMonth.split('-').map(Number); const d = new Date(y, m - 1 + n, 1); ui.calMonth = ymd(d).slice(0, 7); }
-    render(); return;
+    ui.keepScroll = true; render(); return;
   }
   if ((el = c('[data-day]'))) { ui.calSel = el.dataset.day; ui.keepScroll = true; render(); return; }
   if ((el = c('[data-period]'))) { ui.period = el.dataset.period; ui.keepScroll = true; render(); }
@@ -1421,7 +1499,7 @@ document.addEventListener('change', e => {
   const d = e.target.closest('[data-item-due]'); if (!d) return;
   ui.keepScroll = true; patchItem(d.dataset.itemDue, { due: d.value }); toast(d.value ? `Due ${fmtDate(d.value)}` : 'Due date removed');
 });
-// Quick-add a deliverable from the To deliver page.
+// Quick-add a deliverable from the deliveries on Today.
 document.addEventListener('submit', e => {
   const f = e.target.closest('form[data-add-item]'); if (!f) return;
   e.preventDefault();
@@ -1433,8 +1511,8 @@ document.addEventListener('submit', e => {
 });
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && !$('#scrim').hidden) closeLayers();
-  if (e.key === 'Enter' && e.target.matches('.row[data-open], .dl-head[data-open]')) openProject(e.target.dataset.open);
-  if (e.key === 'Enter' && e.target.matches('.row[data-ret-open]')) openRetainer(e.target.dataset.retOpen);
+  if (e.key === 'Enter' && e.target.matches('.row[data-open], .dl-head[data-open], .alert[data-open], .mini-it[data-open]')) openProject(e.target.dataset.open, null, e.target.dataset.ptab);
+  if (e.key === 'Enter' && e.target.matches('.row[data-ret-open], .alert[data-ret-open]')) openRetainer(e.target.dataset.retOpen);
   if (e.key === 'Enter' && e.target.matches('[data-client-open]')) openClient(e.target.dataset.clientOpen);
   if (e.key === 'Enter' && e.target.matches('.doc-it[data-doc]')) { const d = db.docs.find(x => x.id === e.target.dataset.doc); if (d) printDoc(d); }
   if (e.key === 'n' && !e.metaKey && !e.ctrlKey && !e.target.closest('input,textarea,select') && $('#scrim').hidden && cfg) { e.preventDefault(); openQuickAdd(); }
