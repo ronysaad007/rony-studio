@@ -16,7 +16,7 @@ const TABLES = {
   projects: ['id', 'code', 'client', 'phone', 'email', 'instagram', 'title', 'type', 'date', 'time',
              'location', 'price', 'paid', 'expenses', 'status', 'marketing', 'posted', 'source',
              'drive', 'notes', 'created', 'updated'],
-  items: ['id', 'projectId', 'title', 'status', 'due', 'notes'],
+  items: ['id', 'projectId', 'title', 'status', 'due', 'notes', 'type', 'qty'],
   crew: ['id', 'projectId', 'name', 'role', 'fee', 'paidOn', 'notes'],
   retainers: ['id', 'client', 'brand', 'phone', 'instagram', 'platforms', 'fee', 'adBudget', 'start', 'renewal',
               'nextReport', 'posts', 'reels', 'stories', 'status', 'paidMonths', 'services', 'notes', 'created', 'updated'],

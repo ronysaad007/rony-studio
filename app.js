@@ -57,6 +57,7 @@ const ACTIVE = ['Inquiry', 'Booked', 'Shot', 'Editing'];
 const DEFAULTS = {
   types: 'Wedding\nBaptism\nPortrait\nEvent\nCommercial\nReal Estate & Construction\nEditorial\nMusic Video\nOther',
   sources: 'Instagram\nWhatsApp\nReferral\nWebsite\nTikTok\nOther',
+  itemTypes: 'Photos\nReel\nPromo Video\nFull Video\nShort Film\nAlbum\nRaw Files\nOther',
   currency: 'AED',
   businessName: 'Rony Saad',
   tagline: 'Photography / Film / AI / Creative Marketing',
@@ -79,7 +80,14 @@ function normP(p) {
     created: String(p.created || today()), updated: String(p.updated || ''),
   };
 }
-const normI = i => ({ id: String(i.id), projectId: String(i.projectId), title: String(i.title || ''), status: ITEM_STATUSES.includes(i.status) ? i.status : 'Pending', due: String(i.due || ''), notes: String(i.notes || '') });
+const normI = i => ({ id: String(i.id), projectId: String(i.projectId), type: String(i.type || ''), qty: Math.max(1, num(i.qty) || 1), title: String(i.title || ''), status: ITEM_STATUSES.includes(i.status) ? i.status : 'Pending', due: String(i.due || ''), notes: String(i.notes || '') });
+const itemLabel = i => `${i.qty > 1 ? i.qty + '× ' : ''}${i.title || i.type}`;
+// What is still to deliver for a project, grouped by type: "Reel ×2 · Photos".
+function leftSummary(id) {
+  const by = {};
+  itemsOf(id).filter(i => i.status !== 'Delivered').forEach(i => { const k = i.type || i.title || 'Other'; by[k] = (by[k] || 0) + i.qty; });
+  return Object.entries(by).map(([k, n]) => (n > 1 ? `${k} ×${n}` : k)).join(' · ');
+}
 const normC = c => ({ id: String(c.id), projectId: String(c.projectId), name: String(c.name || ''), role: String(c.role || 'Photographer'), fee: num(c.fee), paidOn: String(c.paidOn || ''), notes: String(c.notes || '') });
 function normR(r) {
   return {
@@ -289,8 +297,8 @@ function alerts() {
   db.items.forEach(i => {
     const p = project(i.projectId);
     if (!p || p.status === 'Cancelled' || i.status === 'Delivered' || !i.due) return;
-    if (i.due < t) out.push({ g: 'Overdue deliveries', sev: 'bad', p, item: i, title: `${i.title} · ${p.title}`, sub: `Was due ${fmtDate(i.due)} (${daysBetween(i.due, t)} days late)`, act: 'item' });
-    else if (i.due <= addDays(t, 1)) out.push({ g: 'Due soon', sev: 'warn', p, item: i, title: `${i.title} · ${p.title}`, sub: `Due ${i.due === t ? 'today' : 'tomorrow'}`, act: 'item' });
+    if (i.due < t) out.push({ g: 'Overdue deliveries', sev: 'bad', p, item: i, title: `${itemLabel(i)} · ${p.title}`, sub: `Was due ${fmtDate(i.due)} (${daysBetween(i.due, t)} days late)`, act: 'item' });
+    else if (i.due <= addDays(t, 1)) out.push({ g: 'Due soon', sev: 'warn', p, item: i, title: `${itemLabel(i)} · ${p.title}`, sub: `Due ${i.due === t ? 'today' : 'tomorrow'}`, act: 'item' });
   });
   db.crew.forEach(c => {
     const p = project(c.projectId);
@@ -350,11 +358,11 @@ function dateBlock(p) {
 }
 function projectRow(p) {
   const [pay, payCls] = payState(p);
-  const its = itemsOf(p.id), done = its.filter(i => i.status === 'Delivered').length;
+  const its = itemsOf(p.id), done = its.filter(i => i.status === 'Delivered').length, left = leftSummary(p.id);
   return `<div class="row ${p.status === 'Cancelled' ? 'cancelled' : ''}" data-open="${p.id}" role="button" tabindex="0">
     ${dateBlock(p)}
     <div class="main"><strong>${esc(p.title || p.client)}</strong>
-      <small>${esc(p.client)}${p.type ? ' · ' + esc(p.type) : ''}${p.time ? ' · ' + fmtTime(p.time) : ''}${its.length ? ` · ${done}/${its.length} delivered` : ''}</small></div>
+      <small>${esc(p.client)}${p.type ? ' · ' + esc(p.type) : ''}${p.time ? ' · ' + fmtTime(p.time) : ''}${its.length ? ` · ${done}/${its.length} delivered` : ''}${left ? ` · left: ${esc(left)}` : ''}</small></div>
     ${steps(p)}
     <div class="money"><b>${p.marketing ? 'Free' : money(p.price)}</b><span class="tag ${payCls}">${pay}${!p.marketing && balance(p) && p.paid ? ' · ' + money(balance(p)) + ' left' : ''}</span></div>
   </div>`;
@@ -401,7 +409,7 @@ function renderHome() {
       <section class="panel"><div class="ph"><h2>Coming up</h2><a class="linkbtn" href="#calendar">Calendar →</a></div>
         ${upcoming.length ? `<div class="mini">${upcoming.slice(0, 6).map(p => `<div class="mini-it" data-open="${p.id}"><div><b>${esc(p.title)}</b><small>${esc(p.client)}</small></div><div class="r">${fmtDate(p.date)}<small>${p.date === t ? 'Today' : 'in ' + daysBetween(t, p.date) + ' d'}${p.time ? ' · ' + fmtTime(p.time) : ''}</small></div></div>`).join('')}</div>` : '<div class="empty">No upcoming shoots</div>'}</section>
       <section class="panel"><div class="ph"><h2>To deliver</h2><small>${db.items.filter(i => i.status !== 'Delivered').length} open</small></div>
-        ${openItems.length ? `<div class="mini">${openItems.map(i => { const p = project(i.projectId); return `<div class="mini-it" data-open="${p.id}"><div><b>${esc(i.title)}</b><small>${esc(p.title)} · ${i.status}</small></div><div class="r ${i.due && i.due < t ? 'late' : ''}">${i.due ? fmtDate(i.due) : '<small>No due date</small>'}</div></div>`; }).join('')}</div>` : '<div class="empty">Everything is delivered</div>'}</section>
+        ${openItems.length ? `<div class="mini">${openItems.map(i => { const p = project(i.projectId); return `<div class="mini-it" data-open="${p.id}"><div><b>${esc(itemLabel(i))}</b><small>${esc(p.title)}${i.type && i.title ? ' · ' + esc(i.type) : ''} · ${i.status}${i.notes ? ' · ' + esc(i.notes) : ''}</small></div><div class="r ${i.due && i.due < t ? 'late' : ''}">${i.due ? fmtDate(i.due) : '<small>No due date</small>'}</div></div>`; }).join('')}</div>` : '<div class="empty">Everything is delivered</div>'}</section>
     </div>
   </div>`;
   tickCountdown();
@@ -483,7 +491,7 @@ function renderCalendar() {
   const byDay = {};
   const add = (d, e) => { (byDay[d] = byDay[d] || []).push(e); };
   db.projects.filter(p => p.date && p.status !== 'Cancelled').forEach(p => add(p.date, { kind: p.marketing ? 'free' : 'shoot', p, label: `${p.time ? fmtTime(p.time).replace(':00', '') + ' ' : ''}${p.client}` }));
-  db.items.filter(i => i.due && i.status !== 'Delivered').forEach(i => { const p = project(i.projectId); if (p && p.status !== 'Cancelled') add(i.due, { kind: 'due', p, label: `Due: ${i.title}` }); });
+  db.items.filter(i => i.due && i.status !== 'Delivered').forEach(i => { const p = project(i.projectId); if (p && p.status !== 'Cancelled') add(i.due, { kind: 'due', p, label: `Due: ${itemLabel(i)}` }); });
   let cells = '';
   for (let k = 0; k < 42; k++) {
     const d = new Date(start); d.setDate(start.getDate() + k);
@@ -732,6 +740,7 @@ function renderSettings() {
     <section class="panel stack"><h2>Lists & reminders</h2>
       <label class="field"><span>Shoot types (one per line)</span><textarea id="s-types" rows="7">${esc(setting('types'))}</textarea></label>
       <label class="field"><span>Where clients find you (one per line)</span><textarea id="s-sources" rows="5">${esc(setting('sources'))}</textarea></label>
+      <label class="field"><span>Deliverable types (one per line)</span><textarea id="s-itemTypes" rows="6">${esc(setting('itemTypes'))}</textarea></label>
       <div class="grid2">${f('postDays', 'Remind to post free shoots after (days)', 'number')}${f('deliverDays', 'Flag slow deliveries after (days)', 'number')}</div></section>
     <section class="panel stack"><h2>Data</h2>
       <p class="fine">Import the projects from your old dashboard (its data.json file). This adds them to the Sheet; anything with the same ID is updated, not doubled.</p>
@@ -822,11 +831,14 @@ function openProject(id, preset) {
     $('#moneySum').innerHTML = `<div><small>Balance</small><b style="color:${price - paid > 0 ? 'var(--bad)' : 'var(--ok)'}">${money(Math.max(0, price - paid))}</b></div><div><small>Profit${crew.length ? ' after team' : ''}</small><b>${money(price - ex)}</b></div><div><small>Margin</small><b>${price ? Math.round((price - ex) / price * 100) : 0}%</b></div>`;
   };
   const drawItems = () => {
-    $('#items').innerHTML = items.length ? items.map((it, i) => `<div class="item" data-i="${i}">
-      <input value="${esc(it.title)}" data-k="title" placeholder="e.g. Highlight video" aria-label="Deliverable">
-      <select data-k="status" aria-label="Status">${ITEM_STATUSES.map(s => `<option ${s === it.status ? 'selected' : ''}>${s}</option>`).join('')}</select>
-      <input type="date" value="${esc(it.due)}" data-k="due" aria-label="Due date">
-      <button type="button" class="del" data-rm="${i}" aria-label="Remove">✕</button></div>`).join('') : '<p class="fine">Add what you owe the client: photos, reels, album, highlight video…</p>';
+    $('#items').innerHTML = items.length ? items.map((it, i) => `<div class="item di ${it.status === 'Delivered' ? 'done' : ''}" data-i="${i}">
+      <select data-k="type" class="d-type" aria-label="Type"><option value="">Type…</option>${opt(list('itemTypes'), it.type)}</select>
+      <input value="${esc(it.title)}" data-k="title" class="d-title" placeholder="e.g. Highlight video" aria-label="Deliverable">
+      <input type="number" inputmode="numeric" min="1" value="${it.qty || 1}" data-k="qty" class="d-qty" aria-label="How many">
+      <button type="button" class="del" data-rm="${i}" aria-label="Remove">✕</button>
+      <select data-k="status" class="d-status" aria-label="Status">${ITEM_STATUSES.map(s => `<option ${s === it.status ? 'selected' : ''}>${s}</option>`).join('')}</select>
+      <input type="date" value="${esc(it.due)}" data-k="due" class="d-due" aria-label="Due date">
+      <input value="${esc(it.notes)}" data-k="notes" class="d-notes" placeholder="Notes" aria-label="Notes"></div>`).join('') : '<p class="fine">Add what you owe the client: photos, reels, album, highlight video…</p>';
   };
   const drawCrew = () => {
     $('#crew').innerHTML = crew.length ? crew.map((c, i) => `<div class="item crew-row" data-c="${i}">
@@ -839,7 +851,13 @@ function openProject(id, preset) {
   drawMoney(); drawItems(); drawCrew();
   $('#pForm').addEventListener('input', e => {
     const row = e.target.closest('.item');
-    if (row && e.target.dataset.k) items[row.dataset.i][e.target.dataset.k] = e.target.value;
+    if (row && e.target.dataset.k) {
+      const it = items[row.dataset.i];
+      it[e.target.dataset.k] = e.target.value;
+      // Choosing a type on an empty line names it after the type, so it is saved.
+      if (e.target.dataset.k === 'type' && !it.title.trim()) { it.title = e.target.value; row.querySelector('.d-title').value = it.title; }
+      if (e.target.dataset.k === 'status') row.classList.toggle('done', it.status === 'Delivered');
+    }
     const cr = e.target.closest('.crew-row'), ck = e.target.dataset.ck;
     if (cr && ck) {
       const c = crew[cr.dataset.c];
@@ -856,7 +874,7 @@ function openProject(id, preset) {
   $('#crew').addEventListener('click', e => { const rm = e.target.closest('[data-crm]'); if (rm) { crew.splice(+rm.dataset.crm, 1); drawCrew(); drawMoney(); } });
   $('#crAdd').onclick = () => { crew.push({ id: uid(), projectId: p.id, name: '', role: 'Photographer', fee: 0, paidOn: '', notes: '' }); drawCrew(); $$('#crew .crew-row input[data-ck=name]').pop().focus(); };
   $('#items').addEventListener('click', e => { const rm = e.target.closest('[data-rm]'); if (rm) { items.splice(+rm.dataset.rm, 1); drawItems(); } });
-  $('#itAdd').onclick = () => { items.push({ id: uid(), projectId: p.id, title: '', status: 'Pending', due: '', notes: '' }); drawItems(); $$('#items .item input[data-k=title]').pop().focus(); };
+  $('#itAdd').onclick = () => { items.push({ id: uid(), projectId: p.id, type: list('itemTypes')[0] || '', qty: 1, title: '', status: 'Pending', due: '', notes: '' }); drawItems(); $$('#items .item input[data-k=title]').pop().focus(); };
   $('#payAdd').onclick = () => { const a = num($('#payAmt').value); if (!a) return; $('#f-paid').value = num(val('paid')) + a; $('#payAmt').value = ''; drawMoney(); toast(`${money(a)} added. Save to keep it.`); };
   $('#payFull').onclick = () => { $('#f-paid').value = val('price'); drawMoney(); };
   $('#pSave').onclick = () => {
@@ -867,7 +885,7 @@ function openProject(id, preset) {
       date: val('date'), time: val('time'), location: val('location'), marketing: $('#f-marketing').checked, posted: $('#f-posted').checked,
       price: val('price'), paid: val('paid'), expenses: val('expenses'), drive: val('drive'), notes: $('#f-notes').value.trim(),
     });
-    const its = items.filter(i => i.title.trim()).map(i => normI({ ...i, projectId: out.id, title: i.title.trim() }));
+    const its = items.filter(i => i.title.trim()).map(i => normI({ ...i, projectId: out.id, title: i.title.trim(), notes: String(i.notes || '').trim() }));
     const team = crew.filter(c => c.name.trim() || num(c.fee)).map(c => normC({ ...c, projectId: out.id, name: c.name.trim() }));
     saveProject(out, its, team); closeLayers(); render(); toast(isNew ? 'Booking added' : 'Saved');
   };
@@ -941,7 +959,7 @@ function printInvoice(p) {
   <div class="inv-meta"><div><h4>Billed to</h4><p><b>${esc(p.client)}</b></p><p>${esc(p.phone)}</p><p>${esc(p.email)}</p></div>
     <div><h4>From</h4><p><b>${esc(setting('businessName'))}</b></p><p>${esc(setting('address'))}</p><p>${esc(setting('phone'))} ${esc(setting('email'))}</p></div></div>
   <table><thead><tr><th>Description</th><th>Date</th><th class="n">Amount</th></tr></thead><tbody>
-    <tr><td><b>${esc(p.title)}</b><br>${esc(p.type)}${its.length ? '<br>Includes: ' + its.map(i => esc(i.title)).join(', ') : ''}</td><td>${p.date ? fmtDate(p.date) : ''}</td><td class="n">${money(p.price)}</td></tr>
+    <tr><td><b>${esc(p.title)}</b><br>${esc(p.type)}${its.length ? '<br>Includes: ' + its.map(i => esc(itemLabel(i))).join(', ') : ''}</td><td>${p.date ? fmtDate(p.date) : ''}</td><td class="n">${money(p.price)}</td></tr>
   </tbody></table>
   <div class="inv-tot"><div><span>Total</span><span>${money(p.price)}</span></div><div><span>Received</span><span>${money(p.paid)}</span></div><div class="big"><span>Balance due</span><b>${money(balance(p))}</b></div></div>
   ${setting('payInfo') ? `<div class="inv-note"><b>Payment details</b>\n${esc(setting('payInfo'))}</div>` : ''}
@@ -990,7 +1008,7 @@ function convertOld(old) {
       drive: o.finalDeliveryLink || o.googleDriveLink || o.dropboxLink, notes: o.notes, created: o.createdAt,
     }));
     (o.workItems || []).forEach(w => items.push(normI({
-      id: w._id, projectId: o._id, title: w.title || w.type,
+      id: w._id, projectId: o._id, title: w.title || w.type, type: w.type, qty: w.quantity,
       status: w.status === 'Delivered' ? 'Delivered' : /edit|progress/i.test(w.status) ? 'Editing' : 'Pending',
       due: w.dueDate, notes: w.notes,
     })));
