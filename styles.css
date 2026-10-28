@@ -337,6 +337,10 @@ td.n,th.n{text-align:right}
 .dr-tabs{padding:0 var(--gutr) 0 16px;background:var(--bg2)}
 @media (max-width:560px){.dr-tabs{padding:0 4px}.dr-tabs>*{flex:1 0 auto}.dr-tabs .lg{display:none}}
 .h3-acts{display:flex;gap:14px}
+.span2{grid-column:1/-1}
+.pkg{display:flex;flex-direction:column;gap:10px;padding:12px;border:1px solid var(--line);border-radius:var(--r);background:var(--bg2)}
+.pkg-del{align-self:flex-start;color:var(--faint)}
+.pkg-del:hover{color:var(--bad)}
 .tpl-chk span{color:var(--muted);font-size:13.5px}
 .more-f summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--muted);padding:2px 0}
 .more-f summary:hover{color:var(--fg)}
@@ -480,6 +484,7 @@ td.n,th.n{text-align:right}
 
 /* ---------- invoice & quotation (print only, ronysaad.com look) ---------- */
 .invoice{display:none}
+.invoice.capture{display:flex;position:fixed;left:-10000px;top:0}
 .invoice{
   --d-bg:#0b0b0d; --d-fg:#f6f4f1; --d-mute:rgba(246,244,241,.74); --d-line:rgba(246,244,241,.16); --d-o:#ff641c; --d-o2:#ff8a50;
   position:relative;overflow:hidden;box-sizing:border-box;width:210mm;min-height:296mm;padding:13mm 15mm 10mm;

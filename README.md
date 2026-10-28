@@ -10,6 +10,8 @@ A static web app (GitHub Pages) that reads and writes a private Google Sheet thr
 - **Money**: what's still to collect (balances, deposits, retainer fees, with WhatsApp reminders), revenue, spending and profit for the chosen period; sub-tabs for Charts, Invoices & quotes, Expenses and Team
 - **Charts**: the whole business at a glance for the chosen period: money over time, collected vs owed, revenue by type, shoots over time, pipeline, inquiries won, busiest weekdays, how far ahead clients book, shoot types, sources, new vs returning clients, deliverables, and what's been posted
 - **Deposits**: pick each client's deposit and its due date when you make a quotation; Money → To collect reminds you until it comes in, with a WhatsApp reminder that includes your bank details from Settings
+- **Packages**: ready-made offers (type, price, what's included) set up in Settings; pick one on a booking and it fills everything in
+- **Send PDF**: every invoice and quotation can go straight to WhatsApp (or Mail) as a PDF from the phone; on a computer it downloads
 - **Search** (🔍 or `/`): projects, clients, deliverables, invoices & quotes, expenses and retainers, by name, phone, code or number
 - **More (…)**: Retainers and Settings
 - Invoices (print / Save as PDF), WhatsApp message templates, CSV and JSON export
