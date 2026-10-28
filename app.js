@@ -93,15 +93,23 @@ const itemLabel = i => `${i.qty > 1 ? i.qty + '× ' : ''}${i.title || i.type}`;
 // Kept in Settings as tpl:<type>; without one, these starting lists apply.
 const TPL_DEFAULTS = { Wedding: 'Photos\nReel\nFull Video\nAlbum', Baptism: 'Photos\nReel', Portrait: 'Photos', Event: 'Photos\nReel', Commercial: 'Photos\nPromo Video', 'Real Estate & Construction': 'Photos\nPromo Video', Editorial: 'Photos', 'Music Video': 'Full Video\nReel' };
 const tplText = type => { const r = db.settings.find(s => s.id === 'tpl:' + type); return r ? String(r.value) : TPL_DEFAULTS[type] || ''; };
-function tplItems(type, date, projectId) {
+const tplItems = (type, date, projectId) => parseItems(tplText(type), date, projectId);
+function parseItems(text, date, projectId) {
   const types = list('itemTypes'), days = num(setting('deliverDays')) || 14;
-  return tplText(type).split('\n').map(l => l.trim()).filter(Boolean).map(l => {
+  return String(text || '').split('\n').map(l => l.trim()).filter(Boolean).map(l => {
     const m = l.match(/^(?:(\d+)\s*[x×]?\s+)?(.+?)(?:\s+\+(\d+)\s*d?)?$/i);
     const name = m[2].trim(), t = types.find(x => x.toLowerCase() === name.toLowerCase());
     return normI({ id: uid(), projectId, type: t || 'Other', title: t || name, qty: m[1] || 1, status: 'Pending', due: date ? addDays(date, m[3] ? +m[3] : days) : '' });
   });
 }
 const tplSummary = type => tplItems(type, '', '').map(itemLabel).join(' · ');
+// Ready-made offers ("Wedding Gold"): a type, a price and what's included. Kept in Settings as JSON under "packages".
+const packages = () => { const r = db.settings.find(x => x.id === 'packages'); try { return r ? JSON.parse(r.value || '[]') : []; } catch (e) { return []; } };
+const pkgOf = id => packages().find(k => k.id === id);
+const pkgSummary = k => parseItems(k.items, '', '').map(itemLabel).join(' · ');
+const pkgOptions = (empty, sel = '') => `<option value="">${empty}</option>${packages().map(k => `<option value="${esc(k.id)}" ${k.id === sel ? 'selected' : ''}>${esc(k.name)}${k.price ? ' · ' + money(k.price) : ''}</option>`).join('')}`;
+// Choose a value in a <select>, adding it first if the list doesn't have it.
+const pick = (sel, v) => { if (v && ![...sel.options].some(o => o.value === v)) sel.add(new Option(v, v)); if (v) sel.value = v; };
 // What is still to deliver for a project, grouped by type: "Reel ×2 · Photos".
 function leftSummary(id) {
   const by = {};
@@ -1206,6 +1214,10 @@ function renderSettings() {
       <label class="field"><span>Expense categories (one per line)</span><textarea id="s-expenseCats" rows="6">${esc(setting('expenseCats'))}</textarea></label>
       <label class="field"><span>Deliverable types (one per line)</span><textarea id="s-itemTypes" rows="6">${esc(setting('itemTypes'))}</textarea></label>
       <div class="grid2">${f('postDays', 'Remind to post free shoots after (days)', 'number')}${f('deliverDays', 'Usual delivery time (days after the shoot)', 'number')}</div></section>
+    <section class="panel stack"><h2>Packages</h2>
+      <p class="fine">Your ready-made offers. Choose one on a booking and it fills in the type, the price and what's included. One deliverable per line, written like the lists below.</p>
+      <div class="stack" id="pkgList"></div>
+      <button type="button" class="btn sm" id="pkgAdd" style="align-self:flex-start">+ Add package</button></section>
     <section class="panel stack"><h2>Deliverables per shoot type</h2>
       <p class="fine">Added to every new booking of that type. One per line: <b>Photos</b>, <b>2 Reel</b> (how many), <b>Album +30</b> (due 30 days after the shoot; otherwise the usual delivery time). Leave empty to add nothing.</p>
       ${list('types').map((t, i) => `<label class="field"><span>${esc(t)}</span><textarea id="s-tpl-${i}" data-tpl="${esc(t)}" rows="3">${esc(tplText(t))}</textarea></label>`).join('')}</section>
@@ -1215,9 +1227,23 @@ function renderSettings() {
       <div class="modal-acts" style="justify-content:flex-start"><button class="btn sm" id="sCsv">Download CSV</button><button class="btn sm" id="sJson">Download backup</button></div></section>
   </div>
   <div class="modal-acts"><button class="btn primary" id="sSave">Save settings</button></div>`;
+  const readPkgs = () => $$('#pkgList .pkg').map(el => ({ id: el.dataset.id, name: $('[data-f=name]', el).value.trim(), type: $('[data-f=type]', el).value, price: num($('[data-f=price]', el).value), items: $('[data-f=items]', el).value.trim() }));
+  let pkgs = packages();
+  const drawPkgs = () => {
+    $('#pkgList').innerHTML = pkgs.map(k => `<div class="pkg" data-id="${esc(k.id)}">
+      <div class="grid3"><label class="field"><span>Name</span><input data-f="name" value="${esc(k.name)}" placeholder="e.g. Wedding Gold"></label>
+        <label class="field"><span>Shoot type</span><select data-f="type">${[...new Set([...list('types'), k.type].filter(Boolean))].map(t => `<option ${t === k.type ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></label>
+        <label class="field"><span>Price (${esc(setting('currency'))})</span><input data-f="price" type="number" inputmode="decimal" min="0" value="${k.price || ''}"></label></div>
+      <label class="field"><span>What's included</span><textarea data-f="items" rows="4" placeholder="Photos&#10;2 Reel +7&#10;Full Video&#10;Album +30">${esc(k.items)}</textarea></label>
+      <button type="button" class="linkbtn pkg-del" data-pkg-del="${esc(k.id)}">Remove package</button></div>`).join('') || '<p class="fine">No packages yet.</p>';
+  };
+  drawPkgs();
+  $('#pkgAdd').onclick = () => { pkgs = readPkgs().concat({ id: uid(), name: '', type: list('types')[0] || '', price: 0, items: '' }); drawPkgs(); $$('#pkgList [data-f=name]').pop().focus(); };
+  $('#pkgList').onclick = e => { const b = e.target.closest('[data-pkg-del]'); if (b) { pkgs = readPkgs().filter(k => k.id !== b.dataset.pkgDel); drawPkgs(); } };
   $('#sSave').onclick = () => {
     const rows = Object.keys(DEFAULTS).map(k => ({ id: k, value: $('#s-' + k) ? $('#s-' + k).value.trim() : setting(k) }))
-      .concat($$('[data-tpl]').map(el => ({ id: 'tpl:' + el.dataset.tpl, value: el.value.trim() })));
+      .concat($$('[data-tpl]').map(el => ({ id: 'tpl:' + el.dataset.tpl, value: el.value.trim() })))
+      .concat([{ id: 'packages', value: JSON.stringify(readPkgs().filter(k => k.name)) }]);
     rows.forEach(r => { const i = db.settings.findIndex(s => s.id === r.id); if (i === -1) db.settings.push(r); else db.settings[i] = r; });
     saveLocal(); push({ action: 'upsert', table: 'settings', rows }); toast('Settings saved');
   };
@@ -1259,6 +1285,7 @@ function openProject(id, preset, tab) {
     </section>
     <section class="dr-sec" data-pt="overview" data-new><h3>Shoot</h3>
       <label class="field"><span>Project name</span><input id="f-title" value="${esc(p.title)}" placeholder="e.g. Wedding – Sara & Karim"></label>
+      ${packages().length ? `<label class="field"><span>Package</span><select id="f-pkg">${pkgOptions(isNew ? 'No package' : 'Apply a package…', isNew && preset ? preset._pkg : '')}</select></label>` : ''}
       <div class="grid2"><label class="field"><span>Type</span><select id="f-type">${opt(list('types'), p.type)}</select></label>
         <label class="field"><span>Status</span><select id="f-status">${opt(STATUSES, p.status)}</select></label>
         <label class="field"><span>Date</span><input id="f-date" type="date" value="${esc(p.date)}"></label>
@@ -1370,7 +1397,9 @@ function openProject(id, preset, tab) {
       date: val('date'), time: val('time'), location: val('location'), marketing: $('#f-marketing').checked, posted: $('#f-posted').checked,
       price: val('price'), paid: val('paid'), expenses: val('expenses'), drive: val('drive'), notes: $('#f-notes').value.trim(),
     });
-    if (isNew && $('#f-tpl').checked && !items.length) items = tplItems($('#f-type').value, val('date'), out.id);
+    const k = fpkg();
+    if (isNew && k && !val('title')) out.title = `${k.name} – ${out.client}`;
+    if (isNew && $('#f-tpl').checked && !items.length) items = k ? parseItems(k.items, val('date'), out.id) : tplItems($('#f-type').value, val('date'), out.id);
     const its = items.filter(i => i.title.trim()).map(i => normI({ ...i, projectId: out.id, title: i.title.trim(), notes: String(i.notes || '').trim() }));
     const team = crew.filter(c => c.name.trim() || num(c.fee)).map(c => normC({ ...c, projectId: out.id, name: c.name.trim() }));
     saveProject(out, its, team);
@@ -1378,14 +1407,28 @@ function openProject(id, preset, tab) {
     return true;
   };
   // The usual deliverables for the chosen type: ticked on a new booking, a one-tap add on an existing one.
+  const fpkg = () => $('#f-pkg') && pkgOf($('#f-pkg').value);
   const drawTpl = () => {
-    const type = $('#f-type').value, t = tplSummary(type);
-    if (isNew) { $('#f-tplTxt').textContent = `Add the usual deliverables: ${t}`; $('.tpl-chk', dr).hidden = !t; return; }
+    const type = $('#f-type').value, k = fpkg(), t = k && isNew ? pkgSummary(k) : tplSummary(type);
+    if (isNew) { $('#f-tplTxt').textContent = `${k ? 'Add what ' + k.name + ' includes' : 'Add the usual deliverables'}: ${t}`; $('.tpl-chk', dr).hidden = !t; return; }
     const have = new Set(items.map(i => (i.title || i.type).trim().toLowerCase()));
     const missing = tplItems(type, val('date'), p.id).filter(i => !have.has(i.title.toLowerCase()));
     $('#itTpl').hidden = !missing.length; $('#itTpl').textContent = `+ Usual for ${type}`;
     $('#itTpl').onclick = () => { items.push(...missing); drawItems(); drawTpl(); toast(`${missing.length} added. Save to keep them.`); };
   };
+  // A package fills the type and price; on an existing project it also adds what's missing from its list.
+  if ($('#f-pkg')) $('#f-pkg').onchange = () => {
+    const k = fpkg(); if (!k) { drawTpl(); return; }
+    pick($('#f-type'), k.type); if (k.price) $('#f-price').value = k.price;
+    if (!isNew) {
+      const have = new Set(items.map(i => (i.title || i.type).trim().toLowerCase()));
+      const add = parseItems(k.items, val('date'), p.id).filter(i => !have.has(i.title.toLowerCase()));
+      items.push(...add); drawItems();
+      toast(`${k.name}: ${k.price ? money(k.price) : 'price kept'}${add.length ? `, ${add.length} deliverable${add.length === 1 ? '' : 's'} added` : ''}. Save to keep it.`);
+    }
+    drawMoney(); drawTpl();
+  };
+  if (isNew && fpkg()) $('#f-pkg').onchange();
   showTab(tab); drawMoney(); drawItems(); drawCrew(); drawTpl(); if (!isNew) drawDocs();
   $('#pForm').addEventListener('input', e => {
     const row = e.target.closest('.item');
@@ -1435,6 +1478,7 @@ function openQuickAdd(date) {
     <div class="grid2">
       <label class="field"><span>Client</span><input id="q-client" list="dl-q" required placeholder="Name"></label>
       <label class="field"><span>Phone</span><input id="q-phone" type="tel" placeholder="+971 5x xxx xxxx"></label>
+      ${packages().length ? `<label class="field span2"><span>Package</span><select id="q-pkg">${pkgOptions('No package')}</select></label>` : ''}
       <label class="field"><span>Type</span><select id="q-type">${list('types').map(t => `<option>${esc(t)}</option>`).join('')}</select></label>
       <label class="field"><span>Price (${esc(setting('currency'))})</span><input id="q-price" type="number" inputmode="decimal" min="0" placeholder="0"></label>
       <label class="field"><span>Date</span><input id="q-date" type="date" value="${esc(date || '')}"></label>
@@ -1447,8 +1491,10 @@ function openQuickAdd(date) {
   </form>`;
   showLayer(m);
   setTimeout(() => $('#q-client')?.focus(), 50);
-  const drawTpl = () => { const t = tplSummary($('#q-type').value); $('#q-tplTxt').textContent = `Add the usual deliverables: ${t}`; $('.tpl-chk', m).hidden = !t; };
+  const qpkg = () => $('#q-pkg') && pkgOf($('#q-pkg').value);
+  const drawTpl = () => { const k = qpkg(), t = k ? pkgSummary(k) : tplSummary($('#q-type').value); $('#q-tplTxt').textContent = `${k ? 'Add what ' + k.name + ' includes' : 'Add the usual deliverables'}: ${t}`; $('.tpl-chk', m).hidden = !t; };
   drawTpl(); $('#q-type').addEventListener('change', drawTpl);
+  if ($('#q-pkg')) $('#q-pkg').onchange = () => { const k = qpkg(); if (k) { pick($('#q-type'), k.type); $('#q-price').value = k.price || ''; } drawTpl(); };
   $('#q-client').addEventListener('change', e => {
     const prev = db.projects.find(p => p.client.toLowerCase() === e.target.value.trim().toLowerCase() && p.phone);
     if (prev && !$('#q-phone').value) $('#q-phone').value = prev.phone;
@@ -1457,7 +1503,7 @@ function openQuickAdd(date) {
     const client = $('#q-client').value.trim(), type = $('#q-type').value;
     const prev = db.projects.find(p => p.client.toLowerCase() === client.toLowerCase());
     return {
-      client, phone: $('#q-phone').value.trim(), type, title: client ? `${type} – ${client}` : '', price: $('#q-price').value,
+      client, phone: $('#q-phone').value.trim(), type, title: client ? `${qpkg() ? qpkg().name : type} – ${client}` : '', price: $('#q-price').value, _pkg: qpkg() ? qpkg().id : '',
       date: $('#q-date').value, time: $('#q-time').value, status: $('#q-inq').checked ? 'Inquiry' : 'Booked', marketing: $('#q-free').checked,
       instagram: prev ? prev.instagram : '', email: prev ? prev.email : '', source: prev ? prev.source : '',
     };
@@ -1468,7 +1514,7 @@ function openQuickAdd(date) {
     const v = read();
     if (!v.client) return;
     const p = normP({ id: uid(), code: nextCode(), created: today(), ...v });
-    const its = $('#q-tpl').checked ? tplItems(p.type, p.date, p.id) : [];
+    const its = !$('#q-tpl').checked ? [] : v._pkg ? parseItems(pkgOf(v._pkg).items, p.date, p.id) : tplItems(p.type, p.date, p.id);
     saveProject(p, its); closeLayers(); render();
     toast(`${p.code} added${p.date ? ' for ' + fmtDate(p.date) : ''}${its.length ? ` with ${its.length} deliverable${its.length === 1 ? '' : 's'}` : ''}`);
   };
@@ -1662,11 +1708,59 @@ function printDoc(d) {
     setTimeout(() => { document.title = prevTitle; }, 500);
   });
 }
+// Turn a saved invoice or quotation into a real PDF file (drawn from the same page as the printout).
+const loadScript = src => new Promise((ok, fail) => {
+  if ([...document.scripts].some(x => x.src === src)) return ok();
+  const el = document.createElement('script'); el.src = src; el.onload = ok;
+  el.onerror = () => { el.remove(); fail(new Error('Could not load the PDF maker. Check your connection and try again.')); };
+  document.head.appendChild(el);
+});
+async function docPdf(d) {
+  const s = JSON.parse(d.data);
+  await loadScript('https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js');
+  await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
+  const el = $('#invoice');
+  el.innerHTML = docHtml(s, d); el.classList.add('capture');
+  try {
+    if (document.fonts) await document.fonts.ready;
+    const canvas = await html2canvas(el, { scale: 2, backgroundColor: '#0b0b0d', logging: false });
+    const pdf = new window.jspdf.jsPDF({ unit: 'mm', format: 'a4', compress: true });
+    const img = canvas.toDataURL('image/jpeg', 0.88), h = canvas.height * 210 / canvas.width;
+    for (let y = 0; y < h - 1; y += 297) { if (y) pdf.addPage(); pdf.addImage(img, 'JPEG', 0, -y, 210, h); }
+    return new File([pdf.output('blob')], `${d.no} ${d.client}.pdf`.replace(/[\\/:*?"<>|]+/g, ' ').trim(), { type: 'application/pdf' });
+  } finally { el.classList.remove('capture'); }
+}
+// Send it: the phone's share sheet (WhatsApp, Mail…); on a computer, download it to attach.
+async function shareDoc(d, file) {
+  try {
+    if (!file) { toast('Making the PDF…'); file = await docPdf(d); }
+    const first = d.client.split(/\s+/)[0] || 'there';
+    const text = `Hi ${first}, please find your ${docKind(d.kind).toLowerCase()} ${d.no} attached. Thank you! — ${setting('businessName')}`;
+    if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], text }); return; }
+    const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name;
+    document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+    toast(`${file.name} downloaded`);
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    // Making the PDF can outlast the tap that allowed sharing; one more tap sends it.
+    if (e.name === 'NotAllowedError' && file) { readyToSend(d, file); return; }
+    toast(e.message || 'Could not make the PDF', true);
+  }
+}
+function readyToSend(d, file) {
+  const m = $('#modal'), drawerOpen = !$('#drawer').hidden;
+  m.innerHTML = `<div class="modal-card"><div class="ph" style="margin:0"><h2 id="modalTitle">PDF ready</h2><button type="button" class="x" data-sclose aria-label="Close">✕</button></div>
+    <p class="fine">${esc(file.name)}</p><div class="modal-acts"><button type="button" class="btn ghost" data-sclose>Cancel</button><button type="button" class="btn primary" id="sendNow">Send</button></div></div>`;
+  if (drawerOpen) m.hidden = false; else showLayer(m);
+  const close = () => { if (drawerOpen) { m.hidden = true; m.innerHTML = ''; } else closeLayers(); };
+  $$('[data-sclose]', m).forEach(b => { b.onclick = close; });
+  $('#sendNow').onclick = () => { close(); shareDoc(d, file); };
+}
 function docRow(d, showClient) {
   const p = project(d.projectId);
   return `<div class="mini-it doc-it" data-doc="${esc(d.id)}" role="button" tabindex="0"><div><b><span class="doc-kind k-${d.kind}">${docKind(d.kind)}</span> ${esc(d.no)} · ${money(d.total)}</b>
     <small>${showClient ? esc(d.client) + ' · ' : ''}${fmtDate(d.date)}${p ? ' · ' + esc(p.title) : ''}${d.kind === 'quote' ? ' · total' : ' · balance due'}</small></div>
-    <div class="r"><button type="button" class="btn sm" data-doc="${esc(d.id)}">Open PDF</button><button type="button" class="btn sm ghost" data-doc-del="${esc(d.id)}" aria-label="Delete ${esc(d.no)}">Delete</button></div></div>`;
+    <div class="r"><button type="button" class="btn sm wa" data-doc-share="${esc(d.id)}">Send PDF</button><button type="button" class="btn sm" data-doc="${esc(d.id)}">Open PDF</button><button type="button" class="btn sm ghost" data-doc-del="${esc(d.id)}" aria-label="Delete ${esc(d.no)}">Delete</button></div></div>`;
 }
 function docsBody() {
   const all = [...db.docs].sort((a, b) => b.created.localeCompare(a.created));
@@ -1811,6 +1905,7 @@ document.addEventListener('click', e => {
     if ($('#drawer').hidden) { ui.keepScroll = true; render(); }
     toast(`${d.no} deleted`); return;
   }
+  if ((el = c('[data-doc-share]'))) { e.stopPropagation(); const d = db.docs.find(x => x.id === el.dataset.docShare); if (d) shareDoc(d); return; }
   if ((el = c('[data-doc]'))) { e.stopPropagation(); const d = db.docs.find(x => x.id === el.dataset.doc); if (d) printDoc(d); return; }
   if ((el = c('[data-doc-kind]'))) { ui.docKind = el.dataset.docKind; ui.keepScroll = true; render(); return; }
   if ((el = c('[data-client-open]'))) { openClient(el.dataset.clientOpen); return; }

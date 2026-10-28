@@ -1,6 +1,6 @@
 /* Lets the phone install Studio as an app and open it on a weak connection.
    Always asks the network first, so a new version shows up the next time the app opens. */
-const CACHE = 'studio-v3';
+const CACHE = 'studio-v4';
 const SHELL = ['./', 'index.html', 'app.js', 'styles.css', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', e => {
