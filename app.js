@@ -679,7 +679,7 @@ function periodBuckets() {
 }
 const bucketUnit = bks => (ui.period === 'month' ? 'Day' : ui.period === '3m' ? 'Week' : bks.length && bks[0].from.endsWith('-01-01') && bks[0].to.endsWith('-12-31') ? 'Year' : 'Month');
 // Chart width in real pixels, so axis text stays 11px on a phone and on a wide screen.
-const chartW = half => { const full = Math.min(innerWidth, 1240) - 70; return Math.max(280, Math.round(half && innerWidth > 960 ? (full - 18) / 2 : full)); };
+const chartW = half => { const full = Math.min(innerWidth, 1680) - 70; return Math.max(280, Math.round(half && innerWidth > 960 ? (full - 18) / 2 : full)); };
 const niceStep = x => { const p = Math.pow(10, Math.floor(Math.log10(x || 1))), m = x / p; return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * p; };
 // Columns on one axis. series: [{ k, name, color }] side by side, or stacked with opts.stack; opts.line adds a 2px line (profit).
 function columnChart(bks, series, opts = {}) {

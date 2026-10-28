@@ -8,6 +8,7 @@
   --f-display:'Space Grotesk','DM Sans',system-ui,sans-serif;
   --f-body:'DM Sans',system-ui,-apple-system,'Segoe UI',Arial,sans-serif;
   --r:6px; --r2:12px;
+  --maxw:1680px;
   --gut:max(16px,env(safe-area-inset-left,0px));
   --gutr:max(16px,env(safe-area-inset-right,0px));
   color-scheme:dark;
@@ -106,7 +107,9 @@ input::placeholder,textarea::placeholder{color:#8f878199}
 }
 
 /* ---------- views ---------- */
-.view{max-width:1240px;margin:0 auto;padding:26px var(--gutr) 40px var(--gut);display:flex;flex-direction:column;gap:22px;animation:viewIn .35s cubic-bezier(.2,.7,.2,1)}
+.view{max-width:var(--maxw);margin:0 auto;padding:26px var(--gutr) 40px var(--gut);display:flex;flex-direction:column;gap:22px;animation:viewIn .35s cubic-bezier(.2,.7,.2,1)}
+/* Very wide screens: scale everything up a step instead of leaving wide empty sides. */
+@media (min-width:2200px){:root{--maxw:1900px}body{zoom:1.15}}
 @keyframes viewIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 .vhead{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .vhead h1{font-size:clamp(30px,5vw,46px);font-weight:700;text-transform:uppercase;letter-spacing:-.05em;line-height:.95}
@@ -328,7 +331,7 @@ td.n,th.n{text-align:right}
 /* ---------- drawer ---------- */
 .scrim{position:fixed;inset:0;z-index:50;background:#000000a6;backdrop-filter:blur(3px);animation:fade .2s}
 @keyframes fade{from{opacity:0}}
-.drawer{position:fixed;z-index:55;top:0;right:0;bottom:0;width:min(640px,100vw);background:var(--bg2);border-left:1px solid var(--line2);display:flex;flex-direction:column;animation:slideIn .28s cubic-bezier(.2,.7,.2,1)}
+.drawer{position:fixed;z-index:55;top:0;right:0;bottom:0;width:min(clamp(640px,40vw,820px),100vw);background:var(--bg2);border-left:1px solid var(--line2);display:flex;flex-direction:column;animation:slideIn .28s cubic-bezier(.2,.7,.2,1)}
 @keyframes slideIn{from{transform:translateX(40px);opacity:0}}
 .dr-head{padding:calc(16px + env(safe-area-inset-top,0px)) var(--gutr) 14px 22px;border-bottom:1px solid var(--line);display:flex;gap:12px;align-items:flex-start}
 .dr-head .t{flex:1;min-width:0}
