@@ -31,6 +31,7 @@ const ICONS = {
   wallet: '<path d="M3 7a2 2 0 0 1 2-2h13v4"/><rect x="3" y="7" width="18" height="13" rx="2"/><circle cx="16.5" cy="13.5" r="1.5"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14.5a6.5 6.5 0 0 1 3.5 5.5"/>',
+  box: '<path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/>',
   more: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>',
   repeat: '<path d="M17 2l4 4-4 4"/><path d="M3 11V9a3 3 0 0 1 3-3h15"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a3 3 0 0 1-3 3H3"/>',
   camera: '<path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.5" r="3.5"/>',
@@ -46,7 +47,7 @@ let cfg = store.get(CFG_KEY, null);
 let db = store.get(CACHE_KEY, { projects: [], items: [], settings: [] });
 let queue = store.get(QUEUE_KEY, []);
 let lastSync = store.get('rs.lastSync', null);
-const ui = { view: 'home', filter: 'active', q: '', client: '', calMonth: null, calSel: null, period: 'year', countdown: null };
+const ui = { view: 'home', filter: 'active', dfilter: 'all', dShowDone: false, q: '', client: '', calMonth: null, calSel: null, period: 'year', countdown: null };
 
 const STATUSES = ['Inquiry', 'Booked', 'Shot', 'Editing', 'Delivered', 'Cancelled'];
 const FLOW = ['Booked', 'Shot', 'Editing', 'Delivered'];
@@ -57,6 +58,7 @@ const ACTIVE = ['Inquiry', 'Booked', 'Shot', 'Editing'];
 const DEFAULTS = {
   types: 'Wedding\nBaptism\nPortrait\nEvent\nCommercial\nReal Estate & Construction\nEditorial\nMusic Video\nOther',
   sources: 'Instagram\nWhatsApp\nReferral\nWebsite\nTikTok\nOther',
+  expenseCats: 'Equipment rental\nAI tools\nEditing / montage\nTravel & transport\nGear purchase\nSoftware & subscriptions\nMarketing & ads\nStudio / location\nOther',
   itemTypes: 'Photos\nReel\nPromo Video\nFull Video\nShort Film\nAlbum\nRaw Files\nOther',
   currency: 'AED',
   businessName: 'Rony Saad',
@@ -88,6 +90,7 @@ function leftSummary(id) {
   itemsOf(id).filter(i => i.status !== 'Delivered').forEach(i => { const k = i.type || i.title || 'Other'; by[k] = (by[k] || 0) + i.qty; });
   return Object.entries(by).map(([k, n]) => (n > 1 ? `${k} ×${n}` : k)).join(' · ');
 }
+const normX = x => ({ id: String(x.id), date: String(x.date || today()), category: String(x.category || 'Other'), amount: num(x.amount), projectId: String(x.projectId || ''), note: String(x.note || ''), created: String(x.created || today()) });
 const normC = c => ({ id: String(c.id), projectId: String(c.projectId), name: String(c.name || ''), role: String(c.role || 'Photographer'), fee: num(c.fee), paidOn: String(c.paidOn || ''), notes: String(c.notes || '') });
 function normR(r) {
   return {
@@ -102,6 +105,7 @@ function normR(r) {
 db.projects = (db.projects || []).map(normP);
 db.items = (db.items || []).map(normI);
 db.crew = (db.crew || []).map(normC);
+db.expenses = (db.expenses || []).map(normX);
 db.retainers = (db.retainers || []).map(normR);
 db.settings = db.settings || [];
 
@@ -109,9 +113,11 @@ const project = id => db.projects.find(p => p.id === id);
 const itemsOf = id => db.items.filter(i => i.projectId === id);
 const crewOf = id => db.crew.filter(c => c.projectId === id);
 const crewCost = id => crewOf(id).reduce((s, c) => s + c.fee, 0);
+const expensesOf = id => db.expenses.filter(x => x.projectId === id);
+const linkedCost = id => expensesOf(id).reduce((s, x) => s + x.amount, 0);
 const balance = p => Math.max(0, p.price - p.paid);
-// Everything the shoot cost you: other expenses plus what you pay your team.
-const cost = p => p.expenses + crewCost(p.id);
+// Everything the shoot cost you: other expenses, your team, and logged expenses linked to it.
+const cost = p => p.expenses + crewCost(p.id) + linkedCost(p.id);
 const profit = p => p.price - cost(p);
 const thisMonth = () => today().slice(0, 7);
 const monthName = mk => `${MONTHS[+mk.slice(5) - 1]} ${mk.slice(0, 4)}`;
@@ -191,7 +197,7 @@ async function pull(silent) {
     if (rev !== localRev || queue.length) { setTimeout(() => pull(true), 800); return; }
     db = {
       projects: (j.projects || []).map(normP), items: (j.items || []).map(normI),
-      crew: (j.crew || []).map(normC), retainers: (j.retainers || []).map(normR),
+      crew: (j.crew || []).map(normC), retainers: (j.retainers || []).map(normR), expenses: (j.expenses || []).map(normX),
       settings: (j.settings || []).map(s => ({ id: String(s.id), value: String(s.value ?? '') })),
     };
     lastSync = Date.now(); store.set('rs.lastSync', lastSync);
@@ -408,7 +414,7 @@ function renderHome() {
     <div class="stack">
       <section class="panel"><div class="ph"><h2>Coming up</h2><a class="linkbtn" href="#calendar">Calendar →</a></div>
         ${upcoming.length ? `<div class="mini">${upcoming.slice(0, 6).map(p => `<div class="mini-it" data-open="${p.id}"><div><b>${esc(p.title)}</b><small>${esc(p.client)}</small></div><div class="r">${fmtDate(p.date)}<small>${p.date === t ? 'Today' : 'in ' + daysBetween(t, p.date) + ' d'}${p.time ? ' · ' + fmtTime(p.time) : ''}</small></div></div>`).join('')}</div>` : '<div class="empty">No upcoming shoots</div>'}</section>
-      <section class="panel"><div class="ph"><h2>To deliver</h2><small>${db.items.filter(i => i.status !== 'Delivered').length} open</small></div>
+      <section class="panel"><div class="ph"><h2>To deliver</h2><a class="linkbtn" href="#deliver">${db.items.filter(i => i.status !== 'Delivered' && project(i.projectId) && project(i.projectId).status !== 'Cancelled').length} open · See all →</a></div>
         ${openItems.length ? `<div class="mini">${openItems.map(i => { const p = project(i.projectId); return `<div class="mini-it" data-open="${p.id}"><div><b>${esc(itemLabel(i))}</b><small>${esc(p.title)}${i.type && i.title ? ' · ' + esc(i.type) : ''} · ${i.status}${i.notes ? ' · ' + esc(i.notes) : ''}</small></div><div class="r ${i.due && i.due < t ? 'late' : ''}">${i.due ? fmtDate(i.due) : '<small>No due date</small>'}</div></div>`; }).join('')}</div>` : '<div class="empty">Everything is delivered</div>'}</section>
     </div>
   </div>`;
@@ -524,61 +530,163 @@ function periodRange() {
   if (ui.period === 'year') return [y + '-01-01', y + '-12-31'];
   return ['0000', '9999'];
 }
-function renderMoney() {
-  const [from, to] = periodRange();
-  const paidP = db.projects.filter(p => p.status !== 'Cancelled' && !p.marketing);
-  const inP = paidP.filter(p => dayOf(p) >= from && dayOf(p) <= to);
-  const sum = (a, f) => a.reduce((s, p) => s + f(p), 0);
+// Money in and out for a date range. Shoot income and shoot costs count on the shoot's date;
+// logged expenses on their own date; retainers on the months marked paid.
+function moneyStats(from, to) {
+  const inRange = d => d >= from && d <= to;
+  const live = db.projects.filter(p => p.status !== 'Cancelled' && inRange(dayOf(p)));
+  const paidP = live.filter(p => !p.marketing);
   const retPaid = db.retainers.flatMap(r => paidMonths(r).filter(m => m >= from.slice(0, 7) && m <= to.slice(0, 7)).map(() => r.fee));
   const retIn = retPaid.reduce((s, v) => s + v, 0);
-  const booked = sum(inP, p => p.price) + retIn, collected = sum(inP, p => Math.min(p.paid, p.price || p.paid)) + retIn;
-  const exp = sum(db.projects.filter(p => p.status !== 'Cancelled' && dayOf(p) >= from && dayOf(p) <= to), cost);
-  const owed = paidP.filter(p => balance(p) > 0).sort((a, b) => balance(b) - balance(a));
+  const ledger = db.expenses.filter(x => inRange(x.date));
+  const team = live.reduce((s, p) => s + crewCost(p.id), 0);
+  const other = live.reduce((s, p) => s + p.expenses, 0);
+  const logged = ledger.reduce((s, x) => s + x.amount, 0);
+  const revenue = paidP.reduce((s, p) => s + p.price, 0) + retIn;
+  const collected = paidP.reduce((s, p) => s + Math.min(p.paid, p.price || p.paid), 0) + retIn;
+  const spent = team + other + logged;
+  return { live, paidP, retPaid, retIn, ledger, team, other, logged, revenue, collected, spent, profit: revenue - spent };
+}
+const monthEnd = mk => ymd(new Date(+mk.slice(0, 4), +mk.slice(5), 0));
+function barList(rows, empty) {
+  if (!rows.length) return `<div class="empty">${empty}</div>`;
+  const top = Math.max(1, ...rows.map(r => r.v));
+  return `<div class="bars">${rows.map(r => `<div class="bar-row" ${r.attr || ''}><span>${esc(r.k)}</span><b>${money(r.v)}</b><div class="track"><i style="width:${(r.v / top * 100).toFixed(1)}%"></i></div><small>${r.sub || ''}</small></div>`).join('')}</div>`;
+}
+function renderMoney() {
+  const [from, to] = periodRange();
+  const st = moneyStats(from, to);
+  const pct = (a, b) => (b ? Math.round(a / b * 100) : 0);
+  const owed = db.projects.filter(p => p.status !== 'Cancelled' && !p.marketing && balance(p) > 0).sort((a, b) => balance(b) - balance(a));
+  const owedTotal = owed.reduce((s, p) => s + balance(p), 0) + db.retainers.filter(retDue).reduce((s, r) => s + r.fee, 0);
 
-  // last 12 months chart
+  // Last 12 months: revenue and spending as bars, profit as a line, all on one AED axis.
   const months = [];
   const d0 = new Date(); d0.setDate(1);
   for (let k = 11; k >= 0; k--) { const d = new Date(d0); d.setMonth(d0.getMonth() - k); months.push(ymd(d).slice(0, 7)); }
-  const series = months.map(mk => {
-    const ps = db.projects.filter(p => p.status !== 'Cancelled' && dayOf(p).slice(0, 7) === mk);
-    return { mk, rev: sum(ps.filter(p => !p.marketing), p => p.price) + retIncome(mk), exp: sum(ps, cost) };
-  });
-  const max = Math.max(1, ...series.map(s => Math.max(s.rev, s.exp)));
-  const nice = (() => { const p = Math.pow(10, Math.floor(Math.log10(max))); return Math.ceil(max / p) * p; })();
-  const W = 720, H = 260, L = 56, R = 10, T = 16, B = 30, cw = (W - L - R) / 12, bw = Math.min(18, cw / 3);
-  const yv = v => T + (H - T - B) * (1 - v / nice);
-  const ticks = [0, .25, .5, .75, 1].map(f => nice * f);
-  const svg = `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Revenue and expenses for the last 12 months">
-    <g class="grid">${ticks.map(v => `<line x1="${L}" x2="${W - R}" y1="${yv(v)}" y2="${yv(v)}"/><text x="${L - 8}" y="${yv(v) + 4}" text-anchor="end">${v >= 1000 ? (v / 1000).toLocaleString('en-US', { maximumFractionDigits: 1 }) + 'k' : v}</text>`).join('')}</g>
-    ${series.map((s, i) => { const x = L + i * cw + cw / 2; return `
-      <rect x="${x - bw - 1}" y="${yv(s.rev)}" width="${bw}" height="${Math.max(0, H - B - yv(s.rev))}" rx="2" fill="var(--accent)"><title>${MONTHS[+s.mk.slice(5) - 1]}: revenue ${money(s.rev)}</title></rect>
-      <rect x="${x + 1}" y="${yv(s.exp)}" width="${bw}" height="${Math.max(0, H - B - yv(s.exp))}" rx="2" fill="#ffffff40"><title>${MONTHS[+s.mk.slice(5) - 1]}: expenses ${money(s.exp)}</title></rect>
-      <text x="${x}" y="${H - 10}" text-anchor="middle">${MONTHS[+s.mk.slice(5) - 1]}</text>`; }).join('')}
+  const series = months.map(mk => { const m = moneyStats(mk + '-01', monthEnd(mk)); return { mk, rev: m.revenue, exp: m.spent, prof: m.profit }; });
+  const hi = Math.max(1, ...series.map(s => Math.max(s.rev, s.exp)));
+  const lo = Math.min(0, ...series.map(s => s.prof));
+  const nice = (() => { const p = Math.pow(10, Math.floor(Math.log10(hi))); return Math.ceil(hi / p) * p; })();
+  const W = 720, H = 280, L = 56, R = 10, T = 16, B = 30, cw = (W - L - R) / 12, bw = Math.min(18, cw / 3);
+  const yv = v => T + (H - T - B) * (1 - (v - lo) / (nice - lo));
+  const ticks = [0, .25, .5, .75, 1].map(f => lo + (nice - lo) * f);
+  const k = v => (Math.abs(v) >= 1000 ? (v / 1000).toLocaleString('en-US', { maximumFractionDigits: 1 }) + 'k' : Math.round(v));
+  const line = series.map((s, i) => `${L + i * cw + cw / 2},${yv(s.prof)}`).join(' ');
+  const svg = `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Revenue, spending and profit for the last 12 months">
+    <g class="grid">${ticks.map(v => `<line x1="${L}" x2="${W - R}" y1="${yv(v)}" y2="${yv(v)}"/><text x="${L - 8}" y="${yv(v) + 4}" text-anchor="end">${k(v)}</text>`).join('')}
+      ${lo < 0 ? `<line x1="${L}" x2="${W - R}" y1="${yv(0)}" y2="${yv(0)}" class="zero"/>` : ''}</g>
+    ${series.map((s, i) => { const x = L + i * cw + cw / 2, m = MONTHS[+s.mk.slice(5) - 1]; return `
+      <rect x="${x - bw - 1}" y="${yv(s.rev)}" width="${bw}" height="${Math.max(0, yv(0) - yv(s.rev))}" rx="2" fill="var(--accent)"/>
+      <rect x="${x + 1}" y="${yv(s.exp)}" width="${bw}" height="${Math.max(0, yv(0) - yv(s.exp))}" rx="2" fill="#ffffff40"/>
+      <text x="${x}" y="${H - 10}" text-anchor="middle">${m}</text>
+      <rect class="hit" x="${L + i * cw}" y="${T}" width="${cw}" height="${H - T - B}"><title>${m} ${s.mk.slice(0, 4)}\nRevenue ${money(s.rev)}\nSpent ${money(s.exp)}\nProfit ${money(s.prof)}</title></rect>`; }).join('')}
+    <polyline points="${line}" fill="none" stroke="var(--fg)" stroke-width="2" stroke-linejoin="round" pointer-events="none"/>
+    ${series.map((s, i) => `<circle cx="${L + i * cw + cw / 2}" cy="${yv(s.prof)}" r="4" fill="var(--fg)" stroke="var(--panel)" stroke-width="2" pointer-events="none"/>`).join('')}
   </svg>`;
 
-  const byType = {};
-  inP.forEach(p => { const k = p.type || 'Other'; byType[k] = byType[k] || { n: 0, rev: 0, prof: 0 }; byType[k].n++; byType[k].rev += p.price; byType[k].prof += profit(p); });
-  if (retIn) byType['Social retainers'] = { n: retPaid.length, rev: retIn, prof: retIn, unit: 'paid month' };
-  const types = Object.entries(byType).sort((a, b) => b[1].rev - a[1].rev);
-  const topRev = Math.max(1, ...types.map(t => t[1].rev));
+  // Where the money goes
+  const cats = {};
+  st.ledger.forEach(x => { cats[x.category] = (cats[x.category] || { v: 0, n: 0 }); cats[x.category].v += x.amount; cats[x.category].n++; });
+  const spendRows = [
+    st.team && { k: 'Team', v: st.team, sub: `${pct(st.team, st.spent)}% of spending · see Team →`, attr: 'data-go="team" role="button" tabindex="0"' },
+    ...Object.entries(cats).map(([c, o]) => ({ k: c, v: o.v, sub: `${pct(o.v, st.spent)}% · ${o.n} expense${o.n === 1 ? '' : 's'}` })),
+    st.other && { k: 'Other project costs', v: st.other, sub: `${pct(st.other, st.spent)}% · entered inside projects` },
+  ].filter(Boolean).sort((a, b) => b.v - a.v);
+
+  // Clients, sources, types, team
+  const group = (keyOf, rows) => { const m = {}; rows.forEach(p => { const key = keyOf(p) || 'Unknown'; m[key] = m[key] || { v: 0, n: 0, prof: 0 }; m[key].v += p.price; m[key].n++; m[key].prof += profit(p); }); return Object.entries(m).sort((a, b) => b[1].v - a[1].v); };
+  const clients = group(p => p.client, st.paidP).slice(0, 8);
+  const sources = group(p => p.source, st.paidP);
+  const types = group(p => p.type, st.paidP).map(([t, o]) => ({ k: t, v: o.v, sub: `${o.n} project${o.n === 1 ? '' : 's'} · profit ${money(o.prof)} · ${pct(o.prof, o.v)}% margin` }));
+  if (st.retIn) types.push({ k: 'Social retainers', v: st.retIn, sub: `${st.retPaid.length} paid month${st.retPaid.length === 1 ? '' : 's'}` });
+  types.sort((a, b) => b.v - a.v);
+  const people = {};
+  st.live.forEach(p => crewOf(p.id).forEach(c => { const key = c.name || c.role; people[key] = people[key] || { v: 0, n: 0, roles: new Set() }; people[key].v += c.fee; people[key].n++; people[key].roles.add(c.role); }));
+  const avg = st.paidP.length ? st.paidP.reduce((s, p) => s + p.price, 0) / st.paidP.length : 0;
   const per = { month: 'This month', '3m': '3 months', year: 'This year', all: 'All time' };
+  const nf = v => Math.round(v).toLocaleString('en-US');
+  const catOf = x => `<span class="tag t-mute">${esc(x.category)}</span>`;
 
   $('#view').innerHTML = `
-  <div class="vhead"><div><p class="eyebrow">${per[ui.period]}</p><h1>Mo<span class="o">ney</span></h1></div>
-    <div class="seg" role="group" aria-label="Period">${Object.entries(per).map(([k, v]) => `<button data-period="${k}" aria-pressed="${ui.period === k}">${v}</button>`).join('')}</div></div>
+  <div class="vhead"><div><p class="eyebrow">${per[ui.period]} · ${st.paidP.length} paid project${st.paidP.length === 1 ? '' : 's'} · average ${money(avg)}</p><h1>Mo<span class="o">ney</span></h1></div>
+    <div class="vacts"><div class="seg" role="group" aria-label="Period">${Object.entries(per).map(([key, v]) => `<button data-period="${key}" aria-pressed="${ui.period === key}">${v}</button>`).join('')}</div>
+    <button class="btn primary sm" data-exp-new>+ Add expense</button></div></div>
   <div class="kpis">
-    <div class="kpi"><small>Booked</small><b>${money(booked)}</b><em>${inP.length} paid project${inP.length === 1 ? '' : 's'}${retIn ? ' + retainers' : ''}</em></div>
-    <div class="kpi"><small>Collected</small><b>${money(collected)}</b><em>${booked ? Math.round(collected / booked * 100) : 0}% of booked</em></div>
-    <div class="kpi"><small>Expenses</small><b>${money(exp)}</b><em>team, gear, travel</em></div>
-    <div class="kpi"><small>Profit</small><b class="acc">${money(booked - exp)}</b><em>booked minus expenses</em></div>
+    <div class="kpi"><small>Revenue</small><b>${money(st.revenue)}</b><em>collected ${money(st.collected)} · ${pct(st.collected, st.revenue)}%</em></div>
+    <div class="kpi"><small>Spent</small><b>${money(st.spent)}</b><em>team ${money(st.team)} · other ${money(st.spent - st.team)}</em></div>
+    <div class="kpi"><small>Profit</small><b class="acc">${money(st.profit)}</b><em>${pct(st.profit, st.revenue)}% margin</em></div>
+    <button class="kpi" data-filter="unpaid"><small>Still to collect</small><b>${money(owedTotal)}</b><em>${owed.length} client${owed.length === 1 ? '' : 's'} owe you</em></button>
   </div>
-  <section class="panel"><div class="ph"><h2>Last 12 months</h2><div class="legend" style="margin:0"><span><i style="background:var(--accent)"></i>Revenue</span><span><i style="background:#ffffff40"></i>Expenses</span></div></div>${svg}</section>
+  <section class="panel"><div class="ph"><h2>Last 12 months</h2><div class="legend" style="margin:0"><span><i style="background:var(--accent)"></i>Revenue</span><span><i style="background:#ffffff40"></i>Spent</span><span><i class="ln"></i>Profit</span></div></div>${svg}
+    <p class="fine">Hover a month to see its numbers.</p></section>
   <div class="cols">
-    <section class="panel"><div class="ph"><h2>Waiting to collect</h2><small>${money(sum(owed, balance))} total</small></div>
+    <section class="panel"><div class="ph"><h2>Where the money goes</h2><small>${money(st.spent)} · ${per[ui.period]}</small></div>
+      ${barList(spendRows, 'No spending in this period. Log rentals, AI tools, editing and more with “+ Add expense”.')}</section>
+    <section class="panel"><div class="ph"><h2>Month by month</h2><button class="linkbtn" data-money-csv>Download CSV</button></div>
+      <div class="tbl rep"><table><thead><tr><th>Month</th><th class="n">Revenue</th><th class="n">Spent</th><th class="n">Profit</th></tr></thead><tbody>
+      ${series.slice().reverse().map(s => `<tr><td>${MONTHS[+s.mk.slice(5) - 1]} ${s.mk.slice(2, 4)}</td><td class="n">${nf(s.rev)}</td><td class="n">${nf(s.exp)}</td><td class="n ${s.prof < 0 ? 'neg' : ''}">${nf(s.prof)}</td></tr>`).join('')}
+      <tr class="tot"><td>12 months</td><td class="n">${nf(series.reduce((a, s) => a + s.rev, 0))}</td><td class="n">${nf(series.reduce((a, s) => a + s.exp, 0))}</td><td class="n">${nf(series.reduce((a, s) => a + s.prof, 0))}</td></tr></tbody></table></div>
+      <p class="fine">Amounts in ${esc(setting('currency'))}.</p></section>
+  </div>
+  <div class="cols">
+    <section class="panel"><div class="ph"><h2>Best clients</h2><small>by revenue · ${per[ui.period]}</small></div>
+      ${barList(clients.map(([c, o]) => ({ k: c, v: o.v, sub: `${o.n} project${o.n === 1 ? '' : 's'} · profit ${money(o.prof)}`, attr: `data-client="${esc(c)}" role="button" tabindex="0"` })), 'No paid projects in this period')}</section>
+    <section class="panel"><div class="ph"><h2>Where clients come from</h2><small>${per[ui.period]}</small></div>
+      ${barList(sources.map(([c, o]) => ({ k: c === 'Unknown' ? 'Not recorded' : c, v: o.v, sub: `${o.n} project${o.n === 1 ? '' : 's'}` })), 'No paid projects in this period')}</section>
+  </div>
+  <div class="cols">
+    <section class="panel"><div class="ph"><h2>By shoot type</h2><small>${per[ui.period]}</small></div>${barList(types, 'No paid projects in this period')}</section>
+    <section class="panel"><div class="ph"><h2>Team spending</h2><a class="linkbtn" href="#team">Team →</a></div>
+      ${barList(Object.entries(people).sort((a, b) => b[1].v - a[1].v).map(([n, o]) => ({ k: n, v: o.v, sub: `${[...o.roles].join(', ')} · ${o.n} job${o.n === 1 ? '' : 's'}` })), 'No team costs in this period. Add who worked with you inside each project.')}</section>
+  </div>
+  <div class="cols">
+    <section class="panel"><div class="ph"><h2>Expenses</h2><small>${st.ledger.length} logged · ${money(st.logged)}</small></div>
+      ${st.ledger.length ? `<div class="mini">${st.ledger.slice().sort((a, b) => b.date.localeCompare(a.date)).map(x => { const p = project(x.projectId); return `<div class="mini-it" data-exp-open="${x.id}"><div><b>${esc(x.note || x.category)}</b><small>${fmtDate(x.date)} · ${catOf(x)}${p ? ' · ' + esc(p.title) : ''}</small></div><div class="r"><b>${money(x.amount)}</b></div></div>`; }).join('')}</div>`
+        : '<div class="empty"><b>No expenses logged</b>Rentals, AI tools, editing, travel, subscriptions… add them here to see where your money goes.</div>'}</section>
+    <section class="panel"><div class="ph"><h2>Waiting to collect</h2><small>${money(owedTotal)} total</small></div>
       ${owed.length ? `<div class="mini">${owed.map(p => `<div class="mini-it" data-open="${p.id}"><div><b>${esc(p.title)}</b><small>${esc(p.client)} · ${p.date ? fmtDate(p.date) : 'no date'} · paid ${money(p.paid)} of ${money(p.price)}</small></div><div class="r"><b>${money(balance(p))}</b></div></div>`).join('')}</div>` : '<p class="allclear">Everyone has paid.</p>'}</section>
-    <section class="panel"><div class="ph"><h2>By shoot type</h2><small>${per[ui.period]}</small></div>
-      ${types.length ? `<div class="bars">${types.map(([k, v]) => `<div class="bar-row"><span>${esc(k)}</span><b>${money(v.rev)}</b><div class="track"><i style="width:${(v.rev / topRev * 100).toFixed(1)}%"></i></div><small>${v.n} ${v.unit || 'project'}${v.n === 1 ? '' : 's'} · profit ${money(v.prof)}</small></div>`).join('')}</div>` : '<div class="empty">No paid projects in this period</div>'}</section>
   </div>`;
+  ui.moneySeries = series;
+}
+function exportMoneyCsv() {
+  const rows = [['Month', 'Revenue', 'Spent', 'Profit']].concat((ui.moneySeries || []).map(s => [monthName(s.mk), s.rev, s.exp, s.prof]));
+  download(`studio-money-${today()}.csv`, '﻿' + rows.map(r => r.join(',')).join('\n'), 'text/csv');
+}
+
+// Log or edit an expense. Works on top of an open project too, and only closes itself.
+function openExpense(id, preset, after) {
+  const x = id ? { ...db.expenses.find(e => e.id === id) } : normX({ id: uid(), ...preset });
+  if (!x.id) return;
+  const m = $('#modal');
+  const projects = db.projects.filter(p => p.status !== 'Cancelled').sort((a, b) => dayOf(b).localeCompare(dayOf(a))).slice(0, 60);
+  m.innerHTML = `<form class="modal-card" id="xForm" autocomplete="off">
+    <div class="ph" style="margin:0"><h2 id="modalTitle">${id ? 'Expense' : 'Add expense'}</h2><button type="button" class="x" data-xclose aria-label="Close">✕</button></div>
+    <div class="grid2">
+      <label class="field"><span>Amount (${esc(setting('currency'))})</span><input id="x-amount" type="number" inputmode="decimal" min="0" required value="${x.amount || ''}"></label>
+      <label class="field"><span>Date</span><input id="x-date" type="date" value="${esc(x.date)}"></label>
+      <label class="field"><span>Category</span><select id="x-category">${[...new Set([...list('expenseCats'), x.category])].map(c => `<option ${c === x.category ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select></label>
+      <label class="field"><span>For a project (optional)</span><select id="x-project"><option value="">General business expense</option>${projects.map(p => `<option value="${p.id}" ${p.id === x.projectId ? 'selected' : ''}>${esc(p.title || p.client)}${p.date ? ' · ' + fmtDate(p.date) : ''}</option>`).join('')}</select></label>
+    </div>
+    <label class="field"><span>What was it</span><input id="x-note" value="${esc(x.note)}" placeholder="e.g. Lens rental, Midjourney, editor for reel"></label>
+    <div class="modal-acts">${id ? '<button type="button" class="btn sm danger" id="xDel" style="margin-right:auto">Delete</button>' : ''}<button type="button" class="btn ghost" data-xclose>Cancel</button><button type="submit" class="btn primary">${id ? 'Save' : 'Add expense'}</button></div>
+  </form>`;
+  const drawerOpen = !$('#drawer').hidden;
+  if (drawerOpen) m.hidden = false; else showLayer(m);
+  setTimeout(() => $('#x-amount')?.focus(), 50);
+  const close = () => { if (drawerOpen) { m.hidden = true; m.innerHTML = ''; } else closeLayers(); };
+  $$('[data-xclose]', m).forEach(b => { b.onclick = close; });
+  $('#xForm').onsubmit = e => {
+    e.preventDefault();
+    const out = normX({ ...x, amount: $('#x-amount').value, date: $('#x-date').value, category: $('#x-category').value, projectId: $('#x-project').value, note: $('#x-note').value.trim() });
+    if (!out.amount) { $('#x-amount').focus(); return; }
+    saveRow('expenses', out); close(); if (after) after(); else render(); toast(`${money(out.amount)} · ${out.category} saved`);
+  };
+  const del = $('#xDel');
+  if (del) del.onclick = () => {
+    if (!del.classList.contains('arm')) { del.classList.add('arm'); del.textContent = 'Tap again to delete'; return; }
+    deleteRow('expenses', x.id); close(); if (after) after(); else render(); toast('Expense deleted');
+  };
 }
 
 function renderClients() {
@@ -604,6 +712,66 @@ function renderClients() {
     <td>${c.last ? fmtDate(c.last) : ''}</td>
     <td>${waNumber(c.phone) ? `<a class="btn sm wa" href="https://wa.me/${waNumber(c.phone)}" target="_blank" rel="noopener" data-stop>WhatsApp</a>` : ''}</td></tr>`).join('')}</tbody></table></div>`;
   $('#cq').addEventListener('input', e => { const q = e.target.value.toLowerCase(); $$('#ctb tr').forEach(tr => { tr.hidden = !tr.dataset.s.includes(q); }); });
+}
+
+// Everything still owed to clients, grouped by project, so it can be worked through without opening each project.
+function deliverGroups() {
+  const t = today();
+  return db.projects.filter(p => p.status !== 'Cancelled').map(p => {
+    const its = itemsOf(p.id), open = its.filter(i => i.status !== 'Delivered');
+    const shotOrEditing = ['Shot', 'Editing'].includes(p.status);
+    return {
+      p, its, open, late: open.filter(i => i.due && i.due < t).length,
+      next: open.map(i => i.due).filter(Boolean).sort()[0] || '',
+      allDone: its.length > 0 && !open.length && shotOrEditing, empty: !its.length && shotOrEditing,
+    };
+  }).filter(g => g.open.length || g.allDone || g.empty)
+    .sort((a, b) => (b.late > 0) - (a.late > 0) || (a.next || '9999').localeCompare(b.next || '9999') || dayOf(a.p).localeCompare(dayOf(b.p)));
+}
+function deliverItem(i) {
+  const t = today(), done = i.status === 'Delivered', late = !done && i.due && i.due < t;
+  const hint = !i.due ? 'set a due date' : done ? '' : late ? `${daysBetween(i.due, t)} days late` : i.due === t ? 'due today' : `in ${daysBetween(t, i.due)} days`;
+  const when = `<input type="date" class="dl-date" data-item-due="${i.id}" value="${esc(i.due)}" aria-label="Due date"><small>${hint}</small>`;
+  return `<div class="dl-it ${late ? 'late' : ''} ${done ? 'done' : ''}">
+    <button class="dl-check" type="button" data-item-st="${i.id}" data-to="${done ? 'Pending' : 'Delivered'}" aria-label="${done ? 'Mark not delivered' : 'Mark delivered'}: ${esc(itemLabel(i))}">${done ? '✓' : ''}</button>
+    <div class="main"><b>${esc(itemLabel(i))}</b><small>${i.type && i.title && i.type !== i.title ? esc(i.type) : ''}${i.notes ? (i.type && i.title && i.type !== i.title ? ' · ' : '') + esc(i.notes) : ''}</small></div>
+    <span class="steps" role="group" aria-label="Status">${ITEM_STATUSES.map(s => `<button type="button" data-item-st="${i.id}" data-to="${s}" class="${s === i.status ? 'cur' : ITEM_STATUSES.indexOf(s) < ITEM_STATUSES.indexOf(i.status) ? 'done' : ''}" aria-pressed="${s === i.status}">${s}</button>`).join('')}</span>
+    <div class="due">${when}</div></div>`;
+}
+function renderDeliver() {
+  const t = today(), week = addDays(t, 7);
+  const F = { all: () => true, late: i => i.due && i.due < t, week: i => i.due && i.due <= week, nodate: i => !i.due };
+  const keep = F[ui.dfilter] || F.all;
+  const groups = deliverGroups();
+  const open = groups.flatMap(g => g.open);
+  const counts = Object.fromEntries(Object.keys(F).map(k => [k, open.filter(F[k]).length]));
+  const labels = { all: 'Everything', late: 'Late', week: 'Due this week', nodate: 'No date' };
+  const shown = groups.map(g => ({ ...g, show: (ui.dShowDone ? g.its : g.open).filter(i => i.status === 'Delivered' || keep(i)) }))
+    .filter(g => ui.dfilter === 'all' || g.show.some(i => i.status !== 'Delivered'));
+  const typeOpts = list('itemTypes').map(o => `<option>${esc(o)}</option>`).join('');
+  $('#view').innerHTML = `
+  <div class="vhead"><div><p class="eyebrow">${open.length} thing${open.length === 1 ? '' : 's'} left for ${groups.filter(g => g.open.length).length} project${groups.filter(g => g.open.length).length === 1 ? '' : 's'}</p><h1>To de<span class="o">liver</span></h1></div></div>
+  <div class="kpis">
+    <button class="kpi" data-dfilter="late"><small>Late</small><b class="${counts.late ? 'acc' : ''}">${counts.late}</b><em>past their due date</em></button>
+    <button class="kpi" data-dfilter="week"><small>Due this week</small><b>${counts.week}</b><em>by ${fmtDate(week)}</em></button>
+    <button class="kpi" data-dfilter="nodate"><small>No due date</small><b>${counts.nodate}</b><em>give them a date</em></button>
+    <button class="kpi" data-dfilter="all"><small>Waiting on you</small><b>${groups.filter(g => g.empty || g.allDone).length}</b><em>projects to list or close</em></button>
+  </div>
+  <div class="chips" role="group" aria-label="Filter">${Object.keys(labels).map(k => `<button class="chip" data-dfilter="${k}" aria-pressed="${(ui.dfilter || 'all') === k}">${labels[k]}<span class="n">${counts[k]}</span></button>`).join('')}
+    <button class="chip" data-dshowdone aria-pressed="${!!ui.dShowDone}">Show delivered</button></div>
+  ${shown.length ? shown.map(({ p, its, open: left, show, allDone, empty }) => {
+    const done = its.length - left.length;
+    return `<section class="panel dl-group">
+      <div class="dl-head" data-open="${p.id}" role="button" tabindex="0"><div><b>${esc(p.title || p.client)}</b><small>${esc(p.client)} · ${p.date ? 'shot ' + fmtDate(p.date) : 'no shoot date'} · ${p.status}</small></div>
+        ${its.length ? `<div class="dl-prog"><span>${done} of ${its.length} delivered</span><div class="track"><i style="width:${(done / its.length * 100).toFixed(0)}%"></i></div></div>` : ''}</div>
+      ${show.length ? `<div class="dl-list">${show.map(deliverItem).join('')}</div>` : ''}
+      ${allDone ? `<div class="dl-done">Everything is delivered. <button class="btn sm" data-status="${p.id}" data-to="Delivered">Close project as Delivered</button>${waBtn(p, 'ready', 'Send “files ready”')}</div>` : ''}
+      ${empty ? '<p class="fine">Nothing listed yet. Add what you owe this client so nothing is forgotten.</p>' : ''}
+      <form class="dl-add" data-add-item="${p.id}" autocomplete="off"><select name="type" aria-label="Type">${typeOpts}</select>
+        <input name="title" placeholder="Add something to deliver…" aria-label="What to deliver"><input name="qty" type="number" inputmode="numeric" min="1" value="1" aria-label="How many">
+        <button class="btn sm" type="submit">Add</button></form>
+    </section>`; }).join('')
+    : `<div class="empty"><b>${ui.dfilter && ui.dfilter !== 'all' ? 'Nothing here' : 'All delivered'}</b>${ui.dfilter && ui.dfilter !== 'all' ? 'Try another filter.' : 'Nothing is waiting to be delivered. Well done.'}</div>`}`;
 }
 
 function renderTeam() {
@@ -740,6 +908,7 @@ function renderSettings() {
     <section class="panel stack"><h2>Lists & reminders</h2>
       <label class="field"><span>Shoot types (one per line)</span><textarea id="s-types" rows="7">${esc(setting('types'))}</textarea></label>
       <label class="field"><span>Where clients find you (one per line)</span><textarea id="s-sources" rows="5">${esc(setting('sources'))}</textarea></label>
+      <label class="field"><span>Expense categories (one per line)</span><textarea id="s-expenseCats" rows="6">${esc(setting('expenseCats'))}</textarea></label>
       <label class="field"><span>Deliverable types (one per line)</span><textarea id="s-itemTypes" rows="6">${esc(setting('itemTypes'))}</textarea></label>
       <div class="grid2">${f('postDays', 'Remind to post free shoots after (days)', 'number')}${f('deliverDays', 'Flag slow deliveries after (days)', 'number')}</div></section>
     <section class="panel stack"><h2>Data</h2>
@@ -801,6 +970,7 @@ function openProject(id, preset) {
         <label class="field"><span>Received</span><input id="f-paid" type="number" inputmode="decimal" min="0" value="${p.paid || ''}"></label>
         <label class="field"><span>Other expenses</span><input id="f-expenses" type="number" inputmode="decimal" min="0" value="${p.expenses || ''}"></label></div>
       <div class="money-sum" id="moneySum"></div>
+      <div id="linkedExp"></div>
       <div class="payrow"><input id="payAmt" type="number" inputmode="decimal" min="0" placeholder="Add a payment you received"><button type="button" class="btn sm" id="payAdd">Add payment</button><button type="button" class="btn sm ghost" id="payFull">Paid in full</button></div>
     </section>
     <section class="dr-sec"><h3>Team <button type="button" class="linkbtn" id="crAdd">+ Add</button></h3>
@@ -827,8 +997,12 @@ function openProject(id, preset) {
 
   const val = k => $('#f-' + k).value.trim();
   const drawMoney = () => {
-    const price = num(val('price')), paid = num(val('paid')), ex = num(val('expenses')) + crew.reduce((s, c) => s + num(c.fee), 0);
-    $('#moneySum').innerHTML = `<div><small>Balance</small><b style="color:${price - paid > 0 ? 'var(--bad)' : 'var(--ok)'}">${money(Math.max(0, price - paid))}</b></div><div><small>Profit${crew.length ? ' after team' : ''}</small><b>${money(price - ex)}</b></div><div><small>Margin</small><b>${price ? Math.round((price - ex) / price * 100) : 0}%</b></div>`;
+    const price = num(val('price')), paid = num(val('paid')), ex = num(val('expenses')) + crew.reduce((s, c) => s + num(c.fee), 0) + linkedCost(p.id);
+
+    const lx = expensesOf(p.id);
+    $('#linkedExp').innerHTML = `<div class="linked">${lx.map(x => `<button type="button" class="chip" data-exp-open="${x.id}">${esc(x.note || x.category)} · ${money(x.amount)}</button>`).join('')}<button type="button" class="linkbtn" id="lxAdd">+ Log an expense for this shoot</button></div>`;
+    $('#lxAdd').onclick = () => openExpense(null, { projectId: p.id, date: today() }, drawMoney);
+    $('#moneySum').innerHTML = `<div><small>Balance</small><b style="color:${price - paid > 0 ? 'var(--bad)' : 'var(--ok)'}">${money(Math.max(0, price - paid))}</b></div><div><small>Profit${crew.length || lx.length ? ' after costs' : ''}</small><b>${money(price - ex)}</b></div><div><small>Margin</small><b>${price ? Math.round((price - ex) / price * 100) : 0}%</b></div>`;
   };
   const drawItems = () => {
     $('#items').innerHTML = items.length ? items.map((it, i) => `<div class="item di ${it.status === 'Delivered' ? 'done' : ''}" data-i="${i}">
@@ -1036,7 +1210,7 @@ function importOld(file) {
 }
 
 // ───────────────────────────── routing & events ─────────────────────────────
-const VIEWS = { home: renderHome, projects: renderProjects, calendar: renderCalendar, money: renderMoney, retainers: renderRetainers, team: renderTeam, clients: renderClients, settings: renderSettings };
+const VIEWS = { home: renderHome, projects: renderProjects, deliver: renderDeliver, calendar: renderCalendar, money: renderMoney, retainers: renderRetainers, team: renderTeam, clients: renderClients, settings: renderSettings };
 function render() {
   if (!cfg) return;
   clearInterval(ui.countdown);
@@ -1062,6 +1236,14 @@ document.addEventListener('click', e => {
   if ((el = c('[data-status]'))) { e.stopPropagation(); ui.keepScroll = true; const p = project(el.dataset.status); patchProject(p.id, { status: el.dataset.to }); toast(`${p.code} → ${el.dataset.to}`); return; }
   if ((el = c('[data-paid]'))) { ui.keepScroll = true; const p = project(el.dataset.paid); patchProject(p.id, { paid: p.price }); toast(`${p.client} marked paid`); return; }
   if ((el = c('[data-posted]'))) { ui.keepScroll = true; patchProject(el.dataset.posted, { posted: true }); toast('Marked as posted'); return; }
+  if ((el = c('[data-item-st]'))) {
+    e.stopPropagation(); ui.keepScroll = true;
+    const it = db.items.find(x => x.id === el.dataset.itemSt);
+    patchItem(it.id, { status: el.dataset.to });
+    toast(`${itemLabel(it)} → ${el.dataset.to}`); return;
+  }
+  if ((el = c('[data-dfilter]'))) { ui.dfilter = el.dataset.dfilter; ui.keepScroll = true; render(); return; }
+  if ((el = c('[data-dshowdone]'))) { ui.dShowDone = !ui.dShowDone; ui.keepScroll = true; render(); return; }
   if ((el = c('[data-item-done]'))) { ui.keepScroll = true; patchItem(el.dataset.itemDone, { status: 'Delivered' }); toast('Delivered'); return; }
   if ((el = c('[data-crew-paid]'))) { e.stopPropagation(); ui.keepScroll = true; const cr = db.crew.find(x => x.id === el.dataset.crewPaid); patchCrew(cr.id, { paidOn: today() }); toast(`${cr.name || cr.role} marked paid`); return; }
   if ((el = c('[data-ret-month]'))) { e.stopPropagation(); ui.keepScroll = true; toggleRetMonth(el.dataset.retMonth, el.dataset.m); toast(`${monthName(el.dataset.m)} marked paid`); return; }
@@ -1075,6 +1257,9 @@ document.addEventListener('click', e => {
   if ((el = c('[data-client]'))) { ui.client = el.dataset.client; ui.filter = 'all'; ui.q = ''; go('projects'); return; }
   if ((el = c('[data-open]'))) { openProject(el.dataset.open); return; }
   if ((el = c('[data-ret-new]'))) { openRetainer(); return; }
+  if ((el = c('[data-exp-new]'))) { openExpense(null, { date: today() }); return; }
+  if ((el = c('[data-exp-open]'))) { e.preventDefault(); openExpense(el.dataset.expOpen, null, $('#drawer').hidden ? null : () => $('#moneySum') && $('#f-price').dispatchEvent(new Event('input', { bubbles: true }))); return; }
+  if ((el = c('[data-money-csv]'))) { exportMoneyCsv(); return; }
   if ((el = c('[data-ret-open]'))) { openRetainer(el.dataset.retOpen); return; }
   if ((el = c('[data-more]'))) { openMore(); return; }
   if ((el = c('[data-more-go]'))) { e.preventDefault(); closeLayers(); go(el.dataset.moreGo); return; }
@@ -1087,9 +1272,23 @@ document.addEventListener('click', e => {
   if ((el = c('[data-day]'))) { ui.calSel = el.dataset.day; ui.keepScroll = true; render(); return; }
   if ((el = c('[data-period]'))) { ui.period = el.dataset.period; ui.keepScroll = true; render(); }
 });
+document.addEventListener('change', e => {
+  const d = e.target.closest('[data-item-due]'); if (!d) return;
+  ui.keepScroll = true; patchItem(d.dataset.itemDue, { due: d.value }); toast(d.value ? `Due ${fmtDate(d.value)}` : 'Due date removed');
+});
+// Quick-add a deliverable from the To deliver page.
+document.addEventListener('submit', e => {
+  const f = e.target.closest('form[data-add-item]'); if (!f) return;
+  e.preventDefault();
+  const v = n => f.elements[n].value;
+  const type = v('type'), title = v('title').trim() || type;
+  const it = normI({ id: uid(), projectId: f.dataset.addItem, type, title, qty: v('qty'), status: 'Pending' });
+  db.items.push(it); saveLocal(); push({ action: 'upsert', table: 'items', rows: [it] });
+  ui.keepScroll = true; render(); toast(`${itemLabel(it)} added`);
+});
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && !$('#scrim').hidden) closeLayers();
-  if (e.key === 'Enter' && e.target.matches('.row[data-open]')) openProject(e.target.dataset.open);
+  if (e.key === 'Enter' && e.target.matches('.row[data-open], .dl-head[data-open]')) openProject(e.target.dataset.open);
   if (e.key === 'Enter' && e.target.matches('.row[data-ret-open]')) openRetainer(e.target.dataset.retOpen);
   if (e.key === 'n' && !e.metaKey && !e.ctrlKey && !e.target.closest('input,textarea,select') && $('#scrim').hidden && cfg) { e.preventDefault(); openQuickAdd(); }
 });
