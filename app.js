@@ -848,7 +848,7 @@ $('#cliLink').innerHTML = icon('users');
 
 $('#connectForm').addEventListener('submit', async e => {
   e.preventDefault();
-  const url = $('#cUrl').value.trim(), key = $('#cKey').value.trim();
+  const url = $('#cUrl').value.trim(), key = $('#cKey').value.replace(/\D/g, '');
   const msg = $('#cMsg'), btn = $('#cGo');
   btn.disabled = true; msg.className = 'msg'; msg.textContent = 'Connecting to your Sheet…';
   cfg = { url, key };

@@ -28,7 +28,7 @@
       <label class="field"><span>Google Sheet link (Apps Script web app URL)</span>
         <input id="cUrl" type="url" required placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off" spellcheck="false"></label>
       <label class="field"><span>Passcode</span>
-        <input id="cKey" type="password" required inputmode="numeric" autocomplete="current-password"></label>
+        <input id="cKey" type="text" required inputmode="numeric" autocomplete="off" placeholder="6 digits" maxlength="12"></label>
       <button class="btn primary" type="submit" id="cGo">Open studio <span class="arrow">↗</span></button>
       <p class="msg" id="cMsg" role="status"></p>
     </form>
