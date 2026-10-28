@@ -35,6 +35,7 @@ const ICONS = {
   more: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>',
   repeat: '<path d="M17 2l4 4-4 4"/><path d="M3 11V9a3 3 0 0 1 3-3h15"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a3 3 0 0 1-3 3H3"/>',
   camera: '<path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.5" r="3.5"/>',
+  doc: '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 12h6M9 16h6"/>',
   gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
 };
 const icon = name => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>`;
@@ -63,8 +64,10 @@ const DEFAULTS = {
   currency: 'AED',
   businessName: 'Rony Saad',
   tagline: 'Photography / Film / AI / Creative Marketing',
-  email: '', phone: '', address: 'Dubai, United Arab Emirates', payInfo: '',
+  email: '', phone: '', address: 'Dubai, United Arab Emirates', website: 'ronysaad.com', payInfo: '',
   invoiceNote: 'Thank you for trusting us with your story.',
+  quoteNote: 'Your date is confirmed once the deposit is received. Thank you for considering us for your story.',
+  quoteDays: '14', quoteDeposit: '50',
   postDays: '7', deliverDays: '14',
 };
 const setting = k => { const r = db.settings.find(s => s.id === k); return r && r.value !== '' ? String(r.value) : DEFAULTS[k]; };
@@ -91,6 +94,9 @@ function leftSummary(id) {
   return Object.entries(by).map(([k, n]) => (n > 1 ? `${k} ×${n}` : k)).join(' · ');
 }
 const normX = x => ({ id: String(x.id), date: String(x.date || today()), category: String(x.category || 'Other'), amount: num(x.amount), projectId: String(x.projectId || ''), note: String(x.note || ''), created: String(x.created || today()) });
+// A saved invoice or quotation. `data` is a JSON snapshot, so it reprints exactly as it was sent.
+const normD = d => ({ id: String(d.id), projectId: String(d.projectId || ''), kind: d.kind === 'quote' ? 'quote' : 'invoice', no: String(d.no || ''), date: String(d.date || today()), client: String(d.client || ''), total: num(d.total), data: String(d.data || '{}'), created: String(d.created || '') });
+const docsOf = id => db.docs.filter(d => d.projectId === id).sort((a, b) => b.created.localeCompare(a.created));
 const normC = c => ({ id: String(c.id), projectId: String(c.projectId), name: String(c.name || ''), role: String(c.role || 'Photographer'), fee: num(c.fee), paidOn: String(c.paidOn || ''), notes: String(c.notes || '') });
 function normR(r) {
   return {
@@ -108,6 +114,7 @@ db.crew = (db.crew || []).map(normC);
 db.expenses = (db.expenses || []).map(normX);
 db.retainers = (db.retainers || []).map(normR);
 db.settings = db.settings || [];
+db.docs = (db.docs || []).map(normD);
 
 const project = id => db.projects.find(p => p.id === id);
 const itemsOf = id => db.items.filter(i => i.projectId === id);
@@ -198,6 +205,7 @@ async function pull(silent) {
     db = {
       projects: (j.projects || []).map(normP), items: (j.items || []).map(normI),
       crew: (j.crew || []).map(normC), retainers: (j.retainers || []).map(normR), expenses: (j.expenses || []).map(normX),
+      docs: (j.docs || []).map(normD),
       settings: (j.settings || []).map(s => ({ id: String(s.id), value: String(s.value ?? '') })),
     };
     lastSync = Date.now(); store.set('rs.lastSync', lastSync);
@@ -631,7 +639,7 @@ function renderMoney() {
   </div>
   <div class="cols">
     <section class="panel"><div class="ph"><h2>Best clients</h2><small>by revenue · ${per[ui.period]}</small></div>
-      ${barList(clients.map(([c, o]) => ({ k: c, v: o.v, sub: `${o.n} project${o.n === 1 ? '' : 's'} · profit ${money(o.prof)}`, attr: `data-client="${esc(c)}" role="button" tabindex="0"` })), 'No paid projects in this period')}</section>
+      ${barList(clients.map(([c, o]) => ({ k: c, v: o.v, sub: `${o.n} project${o.n === 1 ? '' : 's'} · profit ${money(o.prof)}`, attr: `data-client-open="${esc(c)}" role="button" tabindex="0"` })), 'No paid projects in this period')}</section>
     <section class="panel"><div class="ph"><h2>Where clients come from</h2><small>${per[ui.period]}</small></div>
       ${barList(sources.map(([c, o]) => ({ k: c === 'Unknown' ? 'Not recorded' : c, v: o.v, sub: `${o.n} project${o.n === 1 ? '' : 's'}` })), 'No paid projects in this period')}</section>
   </div>
@@ -689,29 +697,76 @@ function openExpense(id, preset, after) {
   };
 }
 
-function renderClients() {
+// Clients come straight from projects: anyone you add a booking for gets a profile automatically.
+// The same person is matched by phone number first, then by name.
+const clientKey = p => waNumber(p.phone) || p.client.trim().toLowerCase();
+function clientMap() {
   const map = new Map();
-  db.projects.forEach(p => {
-    const k = waNumber(p.phone) || p.client.trim().toLowerCase();
+  [...db.projects].sort((a, b) => dayOf(a).localeCompare(dayOf(b))).forEach(p => {
+    const k = clientKey(p);
     if (!k) return;
-    const c = map.get(k) || { name: p.client, phone: p.phone, instagram: p.instagram, n: 0, value: 0, owed: 0, last: '', sources: new Set() };
-    c.n++; if (!p.marketing && p.status !== 'Cancelled') { c.value += p.price; c.owed += balance(p); }
-    if (dayOf(p) > c.last) { c.last = dayOf(p); c.name = p.client || c.name; }
-    if (p.phone) c.phone = p.phone; if (p.instagram) c.instagram = p.instagram; if (p.source) c.sources.add(p.source);
+    const c = map.get(k) || { key: k, name: p.client, phone: '', email: '', instagram: '', projects: [], n: 0, value: 0, paid: 0, owed: 0, first: dayOf(p), last: '', sources: new Set() };
+    c.projects.push(p); c.n++;
+    if (!p.marketing && p.status !== 'Cancelled') { c.value += p.price; c.paid += Math.min(p.paid, p.price || p.paid); c.owed += balance(p); }
+    c.last = dayOf(p); if (p.client) c.name = p.client;
+    if (p.phone) c.phone = p.phone; if (p.email) c.email = p.email; if (p.instagram) c.instagram = p.instagram; if (p.source) c.sources.add(p.source);
     map.set(k, c);
   });
-  const rows = [...map.values()].sort((a, b) => b.value - a.value || b.last.localeCompare(a.last));
+  return map;
+}
+function renderClients() {
+  const rows = [...clientMap().values()].sort((a, b) => b.value - a.value || b.last.localeCompare(a.last));
   $('#view').innerHTML = `
   <div class="vhead"><div><p class="eyebrow">${rows.length} clients · ${rows.filter(c => c.n > 1).length} came back</p><h1>Cli<span class="o">ents</span></h1></div></div>
   <input type="search" id="cq" placeholder="Search clients…" aria-label="Search clients">
   <div class="tbl"><table><thead><tr><th>Client</th><th>Phone</th><th class="n">Projects</th><th class="n">Total value</th><th class="n">Still owes</th><th>Last shoot</th><th></th></tr></thead>
-  <tbody id="ctb">${rows.map(c => `<tr data-client="${esc(c.name)}" data-s="${esc((c.name + ' ' + c.phone + ' ' + c.instagram).toLowerCase())}">
+  <tbody id="ctb">${rows.map(c => `<tr data-client-open="${esc(c.key)}" tabindex="0" data-s="${esc((c.name + ' ' + c.phone + ' ' + c.instagram + ' ' + c.email).toLowerCase())}">
     <td><b>${esc(c.name)}</b>${c.instagram ? `<br><small class="code">${esc(c.instagram)}</small>` : ''}</td>
     <td>${esc(c.phone) || '<span class="code">—</span>'}</td><td class="n">${c.n}</td><td class="n">${money(c.value)}</td>
     <td class="n">${c.owed ? `<span class="tag t-bad">${money(c.owed)}</span>` : '<span class="code">—</span>'}</td>
     <td>${c.last ? fmtDate(c.last) : ''}</td>
     <td>${waNumber(c.phone) ? `<a class="btn sm wa" href="https://wa.me/${waNumber(c.phone)}" target="_blank" rel="noopener" data-stop>WhatsApp</a>` : ''}</td></tr>`).join('')}</tbody></table></div>`;
   $('#cq').addEventListener('input', e => { const q = e.target.value.toLowerCase(); $$('#ctb tr').forEach(tr => { tr.hidden = !tr.dataset.s.includes(q); }); });
+}
+// A client's profile: contact, money, every project, what's still to deliver, and their invoices & quotes.
+function openClient(key) {
+  const map = clientMap();
+  const c = map.get(key) || [...map.values()].find(x => x.name === key);
+  if (!c) return;
+  const ids = c.projects.map(p => p.id);
+  const open = db.items.filter(i => ids.includes(i.projectId) && i.status !== 'Delivered');
+  const docs = db.docs.filter(d => ids.includes(d.projectId)).sort((a, b) => b.created.localeCompare(a.created));
+  const wa = waNumber(c.phone), ig = c.instagram.replace(/^@/, '').replace(/^https?:\/\/(www\.)?instagram\.com\//, '').replace(/\/.*$/, '');
+  const projs = [...c.projects].reverse();
+  const dr = $('#drawer');
+  dr.innerHTML = `
+  <div class="dr-head"><div class="t"><span class="code">Client · since ${fmtDate(c.first)}</span><h2 id="drawerTitle">${esc(c.name)}</h2>
+    <div class="sub"><span class="tag t-info">${c.n} project${c.n === 1 ? '' : 's'}</span>${c.n > 1 ? '<span class="tag t-ok">Came back</span>' : ''}${c.owed ? `<span class="tag t-bad">Owes ${money(c.owed)}</span>` : ''}</div></div>
+    <button class="x" data-close aria-label="Close">✕</button></div>
+  <div class="dr-body">
+    <section class="dr-sec"><h3>Contact</h3>
+      <dl class="kv">
+        <dt>Phone</dt><dd>${c.phone ? `<a href="tel:${esc(c.phone.replace(/\s/g, ''))}">${esc(c.phone)}</a>` : '—'}</dd>
+        <dt>Email</dt><dd>${c.email ? `<a href="mailto:${esc(c.email)}">${esc(c.email)}</a>` : '—'}</dd>
+        <dt>Instagram</dt><dd>${ig ? `<a href="https://instagram.com/${esc(ig)}" target="_blank" rel="noopener">@${esc(ig)}</a>` : '—'}</dd>
+        <dt>Found you through</dt><dd>${c.sources.size ? [...c.sources].map(esc).join(', ') : '—'}</dd>
+      </dl>
+      <div class="wa-menu">${wa ? `<a class="btn sm wa" href="https://wa.me/${wa}" target="_blank" rel="noopener">WhatsApp</a>` : ''}<button type="button" class="btn sm" data-client-new="${esc(c.key)}">+ New booking for ${esc(c.name.split(' ')[0])}</button></div>
+    </section>
+    <section class="dr-sec"><h3>Money</h3>
+      <div class="cl-stats"><div><small>Total work</small><b>${money(c.value)}</b></div><div><small>Paid you</small><b>${money(c.paid)}</b></div><div><small>Still owes</small><b class="${c.owed ? 'bad' : ''}">${money(c.owed)}</b></div></div>
+    </section>
+    <section class="dr-sec"><h3>Projects</h3>
+      <div class="mini">${projs.map(p => `<div class="mini-it" data-open="${p.id}" role="button" tabindex="0"><div><b>${esc(p.title || p.type)}</b><small>${esc(p.code)} · ${p.date ? fmtDate(p.date) : 'no date'} · ${esc(p.type)}${p.marketing ? ' · free shoot' : ''}</small></div>
+        <div class="r"><span class="tag ${STATUS_TAG[p.status]}">${p.status}</span>${balance(p) ? `<br><small class="late">owes ${money(balance(p))}</small>` : ''}</div></div>`).join('')}</div>
+    </section>
+    ${open.length ? `<section class="dr-sec"><h3>Still to deliver</h3><div class="mini">${open.map(i => `<div class="mini-it" data-open="${i.projectId}"><div><b>${esc(itemLabel(i))}</b><small>${esc(project(i.projectId).title)}${i.due ? ' · due ' + fmtDate(i.due) : ''}</small></div><div class="r"><span class="tag t-warn">${i.status}</span></div></div>`).join('')}</div></section>` : ''}
+    <section class="dr-sec"><h3>Invoices &amp; quotes</h3>
+      ${docs.length ? `<div class="mini">${docs.map(d => docRow(d)).join('')}</div>` : '<p class="fine">None yet. Open one of their projects and press Invoice or Quotation.</p>'}
+    </section>
+  </div>
+  <div class="dr-foot"><button type="button" class="btn sm ghost" data-client-projects="${esc(c.name)}">Show in Projects</button><span class="sp"></span></div>`;
+  showLayer(dr);
 }
 
 // Everything still owed to clients, grouped by project, so it can be worked through without opening each project.
@@ -885,7 +940,7 @@ function openMore() {
   const m = $('#modal');
   const link = (v, ic, label, sub) => `<a class="more-it" href="#${v}" data-more-go="${v}">${icon(ic)}<span><b>${label}</b><small>${sub}</small></span></a>`;
   m.innerHTML = `<div class="modal-card"><div class="ph" style="margin:0"><h2 id="modalTitle">More</h2><button type="button" class="x" data-close aria-label="Close">✕</button></div>
-    <nav class="more">${link('retainers', 'repeat', 'Retainers', 'Monthly social media clients')}${link('team', 'camera', 'Team', 'Who worked with you and what you owe')}${link('clients', 'users', 'Clients', 'Everyone you shot for')}${link('settings', 'gear', 'Settings', 'Invoice details, lists, backup')}</nav></div>`;
+    <nav class="more">${link('retainers', 'repeat', 'Retainers', 'Monthly social media clients')}${link('team', 'camera', 'Team', 'Who worked with you and what you owe')}${link('clients', 'users', 'Clients', 'Everyone you shot for, with their profile')}${link('docs', 'doc', 'Invoices & quotes', 'Every invoice and quotation you made')}${link('settings', 'gear', 'Settings', 'Invoice details, lists, backup')}</nav></div>`;
   showLayer(m);
 }
 
@@ -898,13 +953,15 @@ function renderSettings() {
       <dl class="kv"><dt>Sheet link</dt><dd>${esc(cfg.url.replace(/(macros\/s\/.{6}).+(.{6}\/exec)/, '$1…$2'))}</dd><dt>Last sync</dt><dd>${lastSync ? new Date(lastSync).toLocaleString() : 'Never'}</dd><dt>Waiting to save</dt><dd>${queue.length}</dd></dl>
       <div class="modal-acts" style="justify-content:flex-start"><button class="btn sm" id="sSync">Sync now</button><button class="btn sm danger" id="sOut">Disconnect this device</button></div>
       <p class="fine">Edit anything straight in the Google Sheet too. Press Sync to pull those changes in.</p></section>
-    <section class="panel stack"><h2>Invoice details</h2>
+    <section class="panel stack"><h2>Invoice & quotation details</h2>
       ${f('businessName', 'Business name')}${f('tagline', 'Tagline')}
       <div class="grid2">${f('email', 'Email', 'email')}${f('phone', 'Phone', 'tel')}</div>
-      ${f('address', 'Address')}
+      <div class="grid2">${f('address', 'Address')}${f('website', 'Website')}</div>
       <div class="grid2">${f('currency', 'Currency')}</div>
       <label class="field"><span>Payment details (bank / IBAN)</span><textarea id="s-payInfo">${esc(setting('payInfo'))}</textarea></label>
-      <label class="field"><span>Note at the bottom of invoices</span><textarea id="s-invoiceNote">${esc(setting('invoiceNote'))}</textarea></label></section>
+      <label class="field"><span>Note at the bottom of invoices</span><textarea id="s-invoiceNote">${esc(setting('invoiceNote'))}</textarea></label>
+      <div class="grid2">${f('quoteDays', 'Quotations valid for (days)', 'number')}${f('quoteDeposit', 'Deposit to confirm (%)', 'number')}</div>
+      <label class="field"><span>Note at the bottom of quotations</span><textarea id="s-quoteNote">${esc(setting('quoteNote'))}</textarea></label></section>
     <section class="panel stack"><h2>Lists & reminders</h2>
       <label class="field"><span>Shoot types (one per line)</span><textarea id="s-types" rows="7">${esc(setting('types'))}</textarea></label>
       <label class="field"><span>Where clients find you (one per line)</span><textarea id="s-sources" rows="5">${esc(setting('sources'))}</textarea></label>
@@ -948,7 +1005,7 @@ function openProject(id, preset) {
     <div class="sub"><span class="tag ${STATUS_TAG[p.status]}">${p.status}</span><span class="tag ${payCls}">${pay}</span></div></div>
     <button class="x" data-close aria-label="Close">✕</button></div>
   <form class="dr-body" id="pForm" autocomplete="off">
-    <section class="dr-sec"><h3>Client</h3>
+    <section class="dr-sec"><h3>Client ${isNew || !p.client ? '' : `<button type="button" class="linkbtn" data-client-open="${esc(clientKey(p))}">Profile ›</button>`}</h3>
       <div class="grid2"><label class="field"><span>Name</span><input id="f-client" list="dl-clients" value="${esc(p.client)}" required></label>
         <label class="field"><span>Phone / WhatsApp</span><input id="f-phone" type="tel" value="${esc(p.phone)}" placeholder="+971 5x xxx xxxx"></label>
         <label class="field"><span>Instagram</span><input id="f-instagram" value="${esc(p.instagram)}" placeholder="@handle"></label>
@@ -984,12 +1041,13 @@ function openProject(id, preset) {
       <label class="field"><span>Delivery / Drive link</span><input id="f-drive" type="url" value="${esc(p.drive)}" placeholder="https://drive.google.com/…"></label>
       <label class="field"><span>Notes</span><textarea id="f-notes" rows="4">${esc(p.notes)}</textarea></label>
     </section>
+    ${isNew ? '' : `<section class="dr-sec"><h3>Invoices &amp; quotes</h3>${docsOf(p.id).length ? `<div class="mini">${docsOf(p.id).map(d => docRow(d)).join('')}</div>` : '<p class="fine">Press Invoice or Quotation below. Each one you make is saved here.</p>'}</section>`}
     ${waNumber(p.phone) && !isNew ? `<section class="dr-sec"><h3>WhatsApp</h3><div class="wa-menu">${waBtn(p, 'confirm', 'Confirm booking')}${waBtn(p, 'remind', 'Shoot reminder')}${balance(p) ? waBtn(p, 'pay', 'Payment reminder') : ''}${waBtn(p, 'ready', 'Files ready')}</div></section>` : ''}
     <datalist id="dl-clients">${clientNames().map(c => `<option value="${esc(c)}">`).join('')}</datalist>
   </form>
   <div class="dr-foot">
     <button class="btn primary" id="pSave" type="button">${isNew ? 'Add booking' : 'Save changes'}</button>
-    ${isNew ? '' : '<button class="btn sm" id="pInvoice" type="button">Invoice</button>'}
+    ${isNew ? '' : '<button class="btn sm" id="pQuote" type="button">Quotation</button><button class="btn sm" id="pInvoice" type="button">Invoice</button>'}
     <span class="sp"></span>
     ${isNew ? '' : '<button class="btn sm danger" id="pDel" type="button">Delete</button>'}
   </div>`;
@@ -1064,6 +1122,7 @@ function openProject(id, preset) {
     saveProject(out, its, team); closeLayers(); render(); toast(isNew ? 'Booking added' : 'Saved');
   };
   const inv = $('#pInvoice'); if (inv) inv.onclick = () => printInvoice(project(p.id));
+  const qt = $('#pQuote'); if (qt) qt.onclick = () => printInvoice(project(p.id), 'quote');
   const del = $('#pDel');
   if (del) del.onclick = () => {
     if (!del.classList.contains('arm')) { del.classList.add('arm'); del.textContent = 'Tap again to delete'; return; }
@@ -1123,25 +1182,95 @@ function closeLayers() {
   if (lastFocus && lastFocus.focus) lastFocus.focus();
 }
 
-// ───────────────────────────── invoice ─────────────────────────────
-function printInvoice(p) {
-  const its = itemsOf(p.id);
-  const no = 'INV-' + (p.code.replace(/\D/g, '') || p.id.slice(-5));
-  $('#invoice').innerHTML = `
-  <div class="inv-head"><div><div class="wordmark">${esc(setting('businessName').toUpperCase().replace(' ', '<span>.</span>'))}<em>®</em></div><div class="tag-line">${esc(setting('tagline'))}</div></div>
-    <div class="inv-title"><h1>INVOICE</h1><div>${no}</div><div>${fmtDate(today())}</div></div></div>
-  <div class="inv-meta"><div><h4>Billed to</h4><p><b>${esc(p.client)}</b></p><p>${esc(p.phone)}</p><p>${esc(p.email)}</p></div>
-    <div><h4>From</h4><p><b>${esc(setting('businessName'))}</b></p><p>${esc(setting('address'))}</p><p>${esc(setting('phone'))} ${esc(setting('email'))}</p></div></div>
-  <table><thead><tr><th>Description</th><th>Date</th><th class="n">Amount</th></tr></thead><tbody>
-    <tr><td><b>${esc(p.title)}</b><br>${esc(p.type)}${its.length ? '<br>Includes: ' + its.map(i => esc(itemLabel(i))).join(', ') : ''}</td><td>${p.date ? fmtDate(p.date) : ''}</td><td class="n">${money(p.price)}</td></tr>
-  </tbody></table>
-  <div class="inv-tot"><div><span>Total</span><span>${money(p.price)}</span></div><div><span>Received</span><span>${money(p.paid)}</span></div><div class="big"><span>Balance due</span><b>${money(balance(p))}</b></div></div>
-  ${setting('payInfo') ? `<div class="inv-note"><b>Payment details</b>\n${esc(setting('payInfo'))}</div>` : ''}
-  <div class="inv-note">${esc(setting('invoiceNote'))}</div>`;
+// ───────────────────────────── invoice & quotation ─────────────────────────────
+// kind 'invoice' bills what was agreed; kind 'quote' offers a price before the client books.
+// Every one you make is saved (Documents tab in the Sheet) and can be printed again exactly as sent.
+// Styled like ronysaad.com: dark page, orange glow, Space Grotesk, thin lines.
+const docDate = d => new Date(d + 'T00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+const docKind = k => (k === 'quote' ? 'Quotation' : 'Invoice');
+function docSnapshot(p, kind) {
+  const quote = kind === 'quote';
+  const days = Math.max(1, num(setting('quoteDays')) || 14);
+  return {
+    kind, code: p.code, client: p.client, phone: p.phone, email: p.email,
+    title: p.title, type: p.type, location: p.location, date: p.date, time: p.time,
+    items: itemsOf(p.id).map(i => ({ title: i.title || i.type, type: i.type, qty: i.qty })),
+    price: p.price, paid: p.paid, balance: balance(p),
+    pct: quote ? Math.min(100, Math.max(0, num(setting('quoteDeposit')))) : 0,
+    valid: quote ? ymd(new Date(Date.now() + days * 864e5)) : '',
+    payInfo: setting('payInfo'), note: setting(quote ? 'quoteNote' : 'invoiceNote'),
+    biz: { name: setting('businessName'), tagline: setting('tagline'), address: setting('address'), phone: setting('phone'), email: setting('email'), website: setting('website'), currency: setting('currency') },
+  };
+}
+function docHtml(s, d) {
+  const quote = s.kind === 'quote', b = s.biz, year = d.date.slice(0, 4);
+  const cash = v => `${esc(b.currency)} ${Math.round(num(v)).toLocaleString('en-US')}`;
+  const logo = `<span class="doc-logo">${esc(b.name.toUpperCase()).replace(' ', '<span>.</span>')}<em>®</em></span>`;
+  const line = (label, value, cls = '') => `<div class="doc-line ${cls}"><span>${label}</span><b>${value}</b></div>`;
+  const items = s.items.length ? s.items : [{ title: s.title, type: s.type, qty: 1 }];
+  const rows = items.map((i, n) => `<tr><td class="doc-no">${String(n + 1).padStart(2, '0')}</td><td><b>${esc(i.title)}</b>${i.type && i.type !== i.title ? `<small>${esc(i.type)}</small>` : ''}</td><td class="n">${i.qty}</td></tr>`).join('');
+  const totals = quote
+    ? line('Total', cash(s.price), 'big') + (s.pct ? line(`Deposit to confirm · ${s.pct}%`, cash(s.price * s.pct / 100)) : '')
+    : line('Total', cash(s.price)) + line('Received', cash(s.paid)) + line('Balance due', cash(s.balance), 'big');
+  const contact = [b.website, b.phone, b.email].filter(Boolean).map(esc).join('<i>/</i>');
+  return `
+  <div class="doc-glow" aria-hidden="true"></div><div class="doc-rings" aria-hidden="true"></div>
+  <header class="doc-top">${logo}<span class="doc-pill"><i></i>${docKind(s.kind)} / ${year}</span></header>
+  <p class="doc-eyebrow">${esc(b.tagline)}</p>
+  <h1 class="doc-title">${quote ? 'Quote' : 'Invoice'}<span>.</span></h1>
+  <div class="doc-ids"><div><span>No.</span><b>${esc(d.no)}</b></div><div><span>Issued</span><b>${docDate(d.date)}</b></div>${quote && s.valid ? `<div><span>Valid until</span><b>${docDate(s.valid)}</b></div>` : ''}${s.date ? `<div><span>Shoot date</span><b>${docDate(s.date)}${s.time ? ' · ' + esc(s.time) : ''}</b></div>` : ''}</div>
+  <div class="doc-meta">
+    <div class="doc-box"><span class="doc-k">${quote ? 'Prepared for' : 'Billed to'}</span><b>${esc(s.client)}</b>${s.phone ? `<p>${esc(s.phone)}</p>` : ''}${s.email ? `<p>${esc(s.email)}</p>` : ''}</div>
+    <div class="doc-box"><span class="doc-k">From</span><b>${esc(b.name)}</b>${[b.address, b.phone, b.email].filter(Boolean).map(v => `<p>${esc(v)}</p>`).join('')}</div>
+  </div>
+  <section class="doc-project"><span class="doc-k">Project</span><h2>${esc(s.title)}</h2><p>${[s.type, s.location].filter(Boolean).map(esc).join(' · ')}</p></section>
+  <table class="doc-table"><thead><tr><th></th><th>${quote ? 'What you get' : 'Delivered'}</th><th class="n">Qty</th></tr></thead><tbody>${rows}</tbody></table>
+  <div class="doc-sum">${totals}</div>
+  ${s.payInfo ? `<div class="doc-box doc-pay"><span class="doc-k">Payment details</span><p>${esc(s.payInfo)}</p></div>` : ''}
+  ${s.note ? `<p class="doc-note">${esc(s.note)}</p>` : ''}
+  <footer class="doc-foot"><div class="doc-bars" aria-hidden="true">${'<i></i>'.repeat(12)}</div><div><span>${esc(b.name.toUpperCase())} © ${year}</span><span>${contact}</span></div></footer>`;
+}
+// Make an invoice or quotation for a project, save it, then print. Pressing the button again
+// without changing anything reprints the saved one instead of saving a copy.
+function printInvoice(p, kind = 'invoice') {
+  const snap = docSnapshot(p, kind), data = JSON.stringify(snap);
+  const mine = docsOf(p.id).filter(d => d.kind === kind);
+  let d = mine.find(x => x.data === data && x.date === today());
+  if (!d) {
+    const base = (kind === 'quote' ? 'QT-' : 'INV-') + (p.code.replace(/\D/g, '') || p.id.slice(-5));
+    d = normD({ id: uid(), projectId: p.id, kind, no: mine.length ? `${base}-${mine.length + 1}` : base, date: today(), client: p.client, total: kind === 'quote' ? p.price : balance(p), data, created: new Date().toISOString() });
+    saveRow('docs', d);
+    toast(`${docKind(kind)} ${d.no} saved`);
+  }
+  printDoc(d);
+}
+function printDoc(d) {
+  let s; try { s = JSON.parse(d.data); } catch (e) { toast('This document could not be opened', true); return; }
+  $('#invoice').innerHTML = docHtml(s, d);
   const prevTitle = document.title;
-  document.title = `${no} ${p.client}`;
-  window.print();
-  setTimeout(() => { document.title = prevTitle; }, 500);
+  document.title = `${d.no} ${d.client}`;
+  // wait for the brand fonts so the PDF never falls back to Arial
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(() => {
+    window.print();
+    setTimeout(() => { document.title = prevTitle; }, 500);
+  });
+}
+function docRow(d, showClient) {
+  const p = project(d.projectId);
+  return `<div class="mini-it doc-it" data-doc="${esc(d.id)}" role="button" tabindex="0"><div><b><span class="doc-kind k-${d.kind}">${docKind(d.kind)}</span> ${esc(d.no)} · ${money(d.total)}</b>
+    <small>${showClient ? esc(d.client) + ' · ' : ''}${fmtDate(d.date)}${p ? ' · ' + esc(p.title) : ''}${d.kind === 'quote' ? ' · total' : ' · balance due'}</small></div>
+    <div class="r"><button type="button" class="btn sm" data-doc="${esc(d.id)}">Open PDF</button><button type="button" class="btn sm ghost" data-doc-del="${esc(d.id)}" aria-label="Delete ${esc(d.no)}">Delete</button></div></div>`;
+}
+function renderDocs() {
+  const all = [...db.docs].sort((a, b) => b.created.localeCompare(a.created));
+  const f = ui.docKind || 'all';
+  const list = all.filter(d => f === 'all' || d.kind === f);
+  $('#view').innerHTML = `
+  <div class="vhead"><div><p class="eyebrow">${all.filter(d => d.kind === 'invoice').length} invoices · ${all.filter(d => d.kind === 'quote').length} quotations</p><h1>Invoices <span class="o">&amp; quotes</span></h1></div></div>
+  <div class="chips">${['all', 'invoice', 'quote'].map(k => `<button class="chip" data-doc-kind="${k}" aria-pressed="${f === k}">${k === 'all' ? 'All' : docKind(k) + 's'}</button>`).join('')}</div>
+  <input type="search" id="dq" placeholder="Search by client or number…" aria-label="Search invoices and quotes">
+  <section class="panel"><div class="mini" id="dlist">${list.length ? list.map(d => docRow(d, true)).join('') : '<p class="empty">Nothing yet. Open a project and press Invoice or Quotation. Every one you make is kept here.</p>'}</div></section>`;
+  $('#dq').addEventListener('input', e => { const q = e.target.value.toLowerCase(); $$('#dlist .doc-it').forEach(r => { r.hidden = !r.textContent.toLowerCase().includes(q); }); });
 }
 
 // ───────────────────────────── import / export ─────────────────────────────
@@ -1210,14 +1339,14 @@ function importOld(file) {
 }
 
 // ───────────────────────────── routing & events ─────────────────────────────
-const VIEWS = { home: renderHome, projects: renderProjects, deliver: renderDeliver, calendar: renderCalendar, money: renderMoney, retainers: renderRetainers, team: renderTeam, clients: renderClients, settings: renderSettings };
+const VIEWS = { home: renderHome, projects: renderProjects, deliver: renderDeliver, calendar: renderCalendar, money: renderMoney, retainers: renderRetainers, team: renderTeam, clients: renderClients, docs: renderDocs, settings: renderSettings };
 function render() {
   if (!cfg) return;
   clearInterval(ui.countdown);
   const y = window.scrollY;
   (VIEWS[ui.view] || renderHome)();
   $$('[data-v]').forEach(a => { if (a.dataset.v === ui.view) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
-  $('#moreBtn').toggleAttribute('aria-current', ['retainers', 'team', 'clients', 'settings'].includes(ui.view));
+  $('#moreBtn').toggleAttribute('aria-current', ['retainers', 'team', 'clients', 'docs', 'settings'].includes(ui.view));
   window.scrollTo(0, ui.keepScroll ? y : 0);
   ui.keepScroll = false;
 }
@@ -1254,6 +1383,22 @@ document.addEventListener('click', e => {
   if ((el = c('[data-close]')) || t.id === 'scrim') { closeLayers(); return; }
   if ((el = c('[data-filter]'))) { e.preventDefault(); ui.filter = el.dataset.filter; if (ui.view !== 'projects') go('projects'); else { ui.keepScroll = true; render(); } return; }
   if ((el = c('[data-go]'))) { go(el.dataset.go); return; }
+  if ((el = c('[data-doc-del]'))) {
+    e.stopPropagation();
+    if (!el.classList.contains('arm')) { el.classList.add('arm'); el.textContent = 'Tap again to delete'; return; }
+    const d = db.docs.find(x => x.id === el.dataset.docDel); deleteRow('docs', d.id);
+    const row = el.closest('.doc-it'); if (row) row.remove();
+    if ($('#drawer').hidden) { ui.keepScroll = true; render(); }
+    toast(`${d.no} deleted`); return;
+  }
+  if ((el = c('[data-doc]'))) { e.stopPropagation(); const d = db.docs.find(x => x.id === el.dataset.doc); if (d) printDoc(d); return; }
+  if ((el = c('[data-doc-kind]'))) { ui.docKind = el.dataset.docKind; ui.keepScroll = true; render(); return; }
+  if ((el = c('[data-client-open]'))) { openClient(el.dataset.clientOpen); return; }
+  if ((el = c('[data-client-new]'))) {
+    const cl = clientMap().get(el.dataset.clientNew); closeLayers();
+    openProject(null, { client: cl.name, phone: cl.phone, email: cl.email, instagram: cl.instagram, source: [...cl.sources].pop() || '' }); return;
+  }
+  if ((el = c('[data-client-projects]'))) { closeLayers(); ui.client = el.dataset.clientProjects; ui.filter = 'all'; ui.q = ''; go('projects'); return; }
   if ((el = c('[data-client]'))) { ui.client = el.dataset.client; ui.filter = 'all'; ui.q = ''; go('projects'); return; }
   if ((el = c('[data-open]'))) { openProject(el.dataset.open); return; }
   if ((el = c('[data-ret-new]'))) { openRetainer(); return; }
@@ -1290,6 +1435,8 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && !$('#scrim').hidden) closeLayers();
   if (e.key === 'Enter' && e.target.matches('.row[data-open], .dl-head[data-open]')) openProject(e.target.dataset.open);
   if (e.key === 'Enter' && e.target.matches('.row[data-ret-open]')) openRetainer(e.target.dataset.retOpen);
+  if (e.key === 'Enter' && e.target.matches('[data-client-open]')) openClient(e.target.dataset.clientOpen);
+  if (e.key === 'Enter' && e.target.matches('.doc-it[data-doc]')) { const d = db.docs.find(x => x.id === e.target.dataset.doc); if (d) printDoc(d); }
   if (e.key === 'n' && !e.metaKey && !e.ctrlKey && !e.target.closest('input,textarea,select') && $('#scrim').hidden && cfg) { e.preventDefault(); openQuickAdd(); }
 });
 $('#syncBtn').addEventListener('click', () => pull());

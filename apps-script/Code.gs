@@ -24,11 +24,12 @@ const TABLES = {
   retainers: ['id', 'client', 'brand', 'phone', 'instagram', 'platforms', 'fee', 'adBudget', 'start', 'renewal',
               'nextReport', 'posts', 'reels', 'stories', 'status', 'paidMonths', 'services', 'notes', 'created', 'updated'],
   expenses: ['id', 'date', 'category', 'amount', 'projectId', 'note', 'created'],
+  docs: ['id', 'projectId', 'kind', 'no', 'date', 'client', 'total', 'data', 'created'],
   settings: ['id', 'value'],
 };
-const SHEET_NAMES = { projects: 'Projects', items: 'Deliverables', crew: 'Team', retainers: 'Retainers', expenses: 'Expenses', settings: 'Settings' };
+const SHEET_NAMES = { projects: 'Projects', items: 'Deliverables', crew: 'Team', retainers: 'Retainers', expenses: 'Expenses', docs: 'Documents', settings: 'Settings' };
 // Columns stored as plain text so Sheets never turns them into numbers or dates.
-const TEXT_COLS = ['id', 'projectId', 'code', 'phone', 'date', 'time', 'due', 'created', 'updated', 'value',
+const TEXT_COLS = ['id', 'projectId', 'code', 'no', 'data', 'phone', 'date', 'time', 'due', 'created', 'updated', 'value',
                    'paidOn', 'start', 'renewal', 'nextReport', 'paidMonths'];
 const MAX_FAILS = 5, LOCK_SECONDS = 15 * 60;
 const CAL_NAME = 'Freelance', CAL_TZ = 'Asia/Dubai', SHOOT_HOURS = 3;
@@ -66,7 +67,7 @@ function doPost(e) {
     switch (req.action) {
       case 'all':
         return out_({ ok: true, projects: read_('projects'), items: read_('items'), crew: read_('crew'),
-                      retainers: read_('retainers'), expenses: read_('expenses'), settings: read_('settings') });
+                      retainers: read_('retainers'), expenses: read_('expenses'), docs: read_('docs'), settings: read_('settings') });
       case 'upsert':
         upsert_(req.table, req.rows || []);
         if (req.table === 'projects') calendarSafe_(() => syncCalendar_((req.rows || []).map(r => String(r.id))));
