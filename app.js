@@ -453,8 +453,14 @@ function tickCountdown() {
   draw(); ui.countdown = setInterval(draw, 30000);
 }
 
+// The client chip and search box narrow both the list and the board.
+function searched(rows) {
+  const q = ui.q.trim().toLowerCase();
+  if (ui.client) rows = rows.filter(p => p.client === ui.client);
+  return q ? rows.filter(p => [p.code, p.client, p.title, p.type, p.phone, p.notes, p.location].join(' ').toLowerCase().includes(q)) : rows;
+}
 function filteredProjects() {
-  const t = today(), q = ui.q.trim().toLowerCase();
+  const t = today();
   const att = new Set(alerts().filter(a => a.p).map(a => a.p.id));
   const F = {
     active: p => ACTIVE.includes(p.status),
@@ -464,9 +470,7 @@ function filteredProjects() {
     marketing: p => p.marketing,
     all: () => true,
   };
-  let rows = db.projects.filter(F[ui.filter] || F.all);
-  if (ui.client) rows = rows.filter(p => p.client === ui.client);
-  if (q) rows = rows.filter(p => [p.code, p.client, p.title, p.type, p.phone, p.notes, p.location].join(' ').toLowerCase().includes(q));
+  const rows = searched(db.projects.filter(F[ui.filter] || F.all));
   const upcomingFirst = ui.filter === 'active';
   return rows.sort((a, b) => {
     if (upcomingFirst) {
@@ -478,6 +482,7 @@ function filteredProjects() {
   });
 }
 function renderProjects() {
+  const board = ui.pview === 'board';
   const att = new Set(alerts().filter(a => a.p).map(a => a.p.id)).size;
   const counts = {
     active: db.projects.filter(p => ACTIVE.includes(p.status)).length,
@@ -488,22 +493,69 @@ function renderProjects() {
     all: db.projects.length,
   };
   const labels = { active: 'Active', attention: 'Needs attention', unpaid: 'Unpaid', delivered: 'Delivered', marketing: 'Free shoots', all: 'All' };
+  const cols = ui.showCancelled ? STATUSES : STATUSES.filter(s => s !== 'Cancelled');
   $('#view').innerHTML = `
   <div class="vhead"><div><p class="eyebrow">${db.projects.length} projects</p><h1>Pro<span class="o">jects</span></h1></div>
-    <button class="btn primary" data-add>+ New booking</button></div>
+    <div class="vacts"><div class="seg" role="group" aria-label="View">${['list', 'board'].map(v => `<button data-pview="${v}" aria-pressed="${(board ? 'board' : 'list') === v}">${v === 'list' ? 'List' : 'Board'}</button>`).join('')}</div>
+    <button class="btn primary" data-add>+ New booking</button></div></div>
   <div class="filters">
     <input type="search" id="q" placeholder="Search client, project, phone, notes…" value="${esc(ui.q)}" aria-label="Search projects">
     ${ui.client ? `<button class="chip" aria-pressed="true" id="clearClient">${esc(ui.client)} ✕</button>` : ''}
   </div>
-  <div class="chips" role="group" aria-label="Filter">${Object.keys(labels).map(k => `<button class="chip" data-filter="${k}" aria-pressed="${ui.filter === k}">${labels[k]}<span class="n">${counts[k]}</span></button>`).join('')}</div>
-  <div class="rows" id="rows"></div>`;
-  drawRows();
-  $('#q').addEventListener('input', e => { ui.q = e.target.value; drawRows(); });
+  ${board ? `<div class="chips kbar" role="group" aria-label="Stages"><span class="kjump chips">${cols.map(c => `<button class="chip" data-kcol="${c}">${c}<span class="n">${searched(db.projects).filter(p => p.status === c).length}</span></button>`).join('')}</span>
+      <button class="chip" data-kcancel aria-pressed="${!!ui.showCancelled}">Show cancelled</button></div>
+    <div class="board" id="board"></div>`
+    : `<div class="chips" role="group" aria-label="Filter">${Object.keys(labels).map(k => `<button class="chip" data-filter="${k}" aria-pressed="${ui.filter === k}">${labels[k]}<span class="n">${counts[k]}</span></button>`).join('')}</div>
+    <div class="rows" id="rows"></div>`}`;
+  (board ? drawBoard : drawRows)();
+  $('#q').addEventListener('input', e => { ui.q = e.target.value; (board ? drawBoard : drawRows)(); });
   const cc = $('#clearClient'); if (cc) cc.onclick = () => { ui.client = ''; renderProjects(); };
 }
 function drawRows() {
   const rows = filteredProjects();
   $('#rows').innerHTML = rows.length ? rows.map(projectRow).join('') : `<div class="empty"><b>No projects here</b>Try another filter, or add a booking.</div>`;
+}
+
+// ───────────────────────────── pipeline board ─────────────────────────────
+// One column per stage. Drag a card to another column, or use its button to move it one stage on.
+const NEXT = { Inquiry: ['Booked', 'Confirm booking'], Booked: ['Shot', 'Mark shot'], Shot: ['Editing', 'Start editing'], Editing: ['Delivered', 'Mark delivered'] };
+function kcard(p) {
+  const t = today(), [pay, payCls] = payState(p), its = itemsOf(p.id), done = its.filter(i => i.status === 'Delivered').length;
+  const late = its.filter(i => i.status !== 'Delivered' && i.due && i.due < t).length;
+  const passed = p.date && p.date < t && ['Inquiry', 'Booked'].includes(p.status), nx = NEXT[p.status];
+  return `<div class="kcard" draggable="true" data-open="${p.id}" data-id="${p.id}" role="button" tabindex="0">
+    <b>${esc(p.title || p.client)}</b><small>${esc(p.client)}${p.type ? ' · ' + esc(p.type) : ''}</small>
+    <span class="kdate ${passed ? 'late' : ''}">${p.date ? fmtDate(p.date) : 'No date'}${p.time ? ' · ' + fmtTime(p.time) : ''}</span>
+    <div class="ktags">${['Inquiry', 'Cancelled'].includes(p.status) ? '' : `<span class="tag ${payCls}">${pay}</span>`}${its.length && ['Shot', 'Editing', 'Delivered'].includes(p.status) ? `<span class="tag ${done === its.length ? 't-ok' : 't-mute'}">${done}/${its.length} delivered</span>` : ''}${late ? `<span class="tag t-bad">${late} late</span>` : ''}${passed ? '<span class="tag t-warn">Date passed</span>' : ''}${p.marketing ? '<b>Free</b>' : p.price ? `<b>${money(p.price)}</b>` : ''}</div>
+    ${nx ? `<button type="button" class="btn sm knext" data-status="${p.id}" data-to="${nx[0]}">${nx[1]} →</button>` : ''}</div>`;
+}
+function drawBoard() {
+  const rows = searched(db.projects), narrowed = !!(ui.client || ui.q.trim());
+  const cols = ui.showCancelled ? STATUSES : STATUSES.filter(s => s !== 'Cancelled');
+  // Open work: oldest date first, undated last. Finished work: newest first, recent ones only.
+  const asc = (a, b) => (a.date || '9999').localeCompare(b.date || '9999') || a.time.localeCompare(b.time);
+  const desc = (a, b) => dayOf(b).localeCompare(dayOf(a));
+  const bd = $('#board');
+  bd.innerHTML = cols.map(s => {
+    const ps = rows.filter(p => p.status === s).sort(ACTIVE.includes(s) ? asc : desc);
+    const shown = ACTIVE.includes(s) || narrowed ? ps : ps.slice(0, 12);
+    const val = ps.filter(p => !p.marketing).reduce((sum, p) => sum + p.price, 0);
+    return `<section class="kcol" data-col="${s}" id="col-${s}" aria-label="${s}"><div class="kh"><span class="tag ${STATUS_TAG[s]}">${s}</span><b>${ps.length}</b><small>${val ? money(val) : ''}</small></div>
+      <div class="klist">${shown.map(kcard).join('') || '<p class="kempty">Nothing here</p>'}
+      ${ps.length > shown.length ? `<button class="linkbtn" data-filter="${s === 'Delivered' ? 'delivered' : 'all'}">${ps.length - shown.length} older in the list →</button>` : ''}</div></section>`;
+  }).join('');
+  bd.scrollLeft = ui.boardX || 0;
+  bd.onscroll = () => { ui.boardX = bd.scrollLeft; };
+  bd.ondragstart = e => { const c = e.target.closest('.kcard'); if (!c) return; e.dataTransfer.setData('text/plain', c.dataset.id); e.dataTransfer.effectAllowed = 'move'; c.classList.add('drag'); };
+  bd.ondragend = () => $$('.drag, .over', bd).forEach(x => x.classList.remove('drag', 'over'));
+  bd.ondragover = e => { const col = e.target.closest('.kcol'); if (!col) return; e.preventDefault(); $$('.kcol.over', bd).forEach(x => { if (x !== col) x.classList.remove('over'); }); col.classList.add('over'); };
+  bd.ondrop = e => {
+    const col = e.target.closest('.kcol'); if (!col) return;
+    e.preventDefault(); bd.ondragend();
+    const p = project(e.dataTransfer.getData('text/plain')), to = col.dataset.col;
+    if (!p || p.status === to) return;
+    ui.keepScroll = true; patchProject(p.id, { status: to }); toast(`${p.code} → ${to}`);
+  };
 }
 
 function calendarSection() {
@@ -1429,6 +1481,7 @@ function route() {
   const [v, sub] = h.split('/');
   ui.view = VIEWS[v] ? v : 'today';
   if (ui.view === 'money') ui.mtab = MTABS[sub] ? sub : 'report';
+  if (ui.view === 'projects') { ui.pview = ['list', 'board'].includes(sub) ? sub : store.get('rs.pview', 'list'); store.set('rs.pview', ui.pview); }
   render();
 }
 function go(view) { if (location.hash.slice(1) === view) render(); else location.hash = view; }
@@ -1459,7 +1512,10 @@ document.addEventListener('click', e => {
   if ((el = c('[data-add]'))) { openQuickAdd(); return; }
   if ((el = c('[data-add-day]'))) { openQuickAdd(el.dataset.addDay); return; }
   if ((el = c('[data-close]')) || t.id === 'scrim') { closeLayers(); return; }
-  if ((el = c('[data-filter]'))) { e.preventDefault(); ui.filter = el.dataset.filter; if (ui.view !== 'projects') go('projects'); else { ui.keepScroll = true; render(); } return; }
+  if ((el = c('[data-filter]'))) { e.preventDefault(); ui.filter = el.dataset.filter; if (ui.view !== 'projects' || ui.pview !== 'list') go('projects/list'); else { ui.keepScroll = true; render(); } return; }
+  if ((el = c('[data-pview]'))) { go('projects/' + el.dataset.pview); return; }
+  if ((el = c('[data-kcancel]'))) { ui.showCancelled = !ui.showCancelled; ui.keepScroll = true; render(); return; }
+  if ((el = c('[data-kcol]'))) { const col = $('#col-' + el.dataset.kcol); if (col) $('#board').scrollTo({ left: col.offsetLeft, behavior: 'smooth' }); return; }
   if ((el = c('[data-go]'))) { go(el.dataset.go); return; }
   if ((el = c('[data-doc-del]'))) {
     e.stopPropagation();
@@ -1476,8 +1532,8 @@ document.addEventListener('click', e => {
     const cl = clientMap().get(el.dataset.clientNew); closeLayers();
     openProject(null, { client: cl.name, phone: cl.phone, email: cl.email, instagram: cl.instagram, source: [...cl.sources].pop() || '' }); return;
   }
-  if ((el = c('[data-client-projects]'))) { closeLayers(); ui.client = el.dataset.clientProjects; ui.filter = 'all'; ui.q = ''; go('projects'); return; }
-  if ((el = c('[data-client]'))) { ui.client = el.dataset.client; ui.filter = 'all'; ui.q = ''; go('projects'); return; }
+  if ((el = c('[data-client-projects]'))) { closeLayers(); ui.client = el.dataset.clientProjects; ui.filter = 'all'; ui.q = ''; go('projects/list'); return; }
+  if ((el = c('[data-client]'))) { ui.client = el.dataset.client; ui.filter = 'all'; ui.q = ''; go('projects/list'); return; }
   if ((el = c('[data-open]'))) { openProject(el.dataset.open, null, el.dataset.ptab); return; }
   if ((el = c('[data-ret-new]'))) { openRetainer(); return; }
   if ((el = c('[data-exp-new]'))) { openExpense(null, { date: today() }); return; }
@@ -1511,7 +1567,7 @@ document.addEventListener('submit', e => {
 });
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && !$('#scrim').hidden) closeLayers();
-  if (e.key === 'Enter' && e.target.matches('.row[data-open], .dl-head[data-open], .alert[data-open], .mini-it[data-open]')) openProject(e.target.dataset.open, null, e.target.dataset.ptab);
+  if (e.key === 'Enter' && e.target.matches('.row[data-open], .dl-head[data-open], .alert[data-open], .mini-it[data-open], .kcard[data-open]')) openProject(e.target.dataset.open, null, e.target.dataset.ptab);
   if (e.key === 'Enter' && e.target.matches('.row[data-ret-open], .alert[data-ret-open]')) openRetainer(e.target.dataset.retOpen);
   if (e.key === 'Enter' && e.target.matches('[data-client-open]')) openClient(e.target.dataset.clientOpen);
   if (e.key === 'Enter' && e.target.matches('.doc-it[data-doc]')) { const d = db.docs.find(x => x.id === e.target.dataset.doc); if (d) printDoc(d); }

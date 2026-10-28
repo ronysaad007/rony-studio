@@ -4,7 +4,7 @@ Bookings, deliveries and money for Rony Saad's freelance photography & film work
 A static web app (GitHub Pages) that reads and writes a private Google Sheet through a small Apps Script.
 
 - **Today**: money to collect, deliveries due or late (tick them off inline), upcoming shoots with a countdown, loose ends, and the month calendar
-- **Projects**: one-tap status (Booked → Shot → Editing → Delivered), search and filters. Each project opens in tabs: Overview, Deliverables, Money, Invoices & quotes, Notes
+- **Projects**: a list with one-tap status (Booked → Shot → Editing → Delivered), search and filters, or a pipeline board with a column per stage (drag cards, or tap the next step). Each project opens in tabs: Overview, Deliverables, Money, Invoices & quotes, Notes
 - **Clients**: built from your projects, with lifetime value, what they owe and WhatsApp
 - **Money**: booked, collected, expenses, profit, 12‑month chart, who still owes; sub-tabs for Invoices & quotes, Expenses and Team
 - **More (…)**: Retainers and Settings
