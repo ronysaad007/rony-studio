@@ -88,6 +88,19 @@ function normP(p) {
 }
 const normI = i => ({ id: String(i.id), projectId: String(i.projectId), type: String(i.type || ''), qty: Math.max(1, num(i.qty) || 1), title: String(i.title || ''), status: ITEM_STATUSES.includes(i.status) ? i.status : 'Pending', due: String(i.due || ''), notes: String(i.notes || '') });
 const itemLabel = i => `${i.qty > 1 ? i.qty + '× ' : ''}${i.title || i.type}`;
+// What each shoot type usually includes, one deliverable per line: "Photos", "2 Reel", "Album +30" (due 30 days after the shoot).
+// Kept in Settings as tpl:<type>; without one, these starting lists apply.
+const TPL_DEFAULTS = { Wedding: 'Photos\nReel\nFull Video\nAlbum', Baptism: 'Photos\nReel', Portrait: 'Photos', Event: 'Photos\nReel', Commercial: 'Photos\nPromo Video', 'Real Estate & Construction': 'Photos\nPromo Video', Editorial: 'Photos', 'Music Video': 'Full Video\nReel' };
+const tplText = type => { const r = db.settings.find(s => s.id === 'tpl:' + type); return r ? String(r.value) : TPL_DEFAULTS[type] || ''; };
+function tplItems(type, date, projectId) {
+  const types = list('itemTypes'), days = num(setting('deliverDays')) || 14;
+  return tplText(type).split('\n').map(l => l.trim()).filter(Boolean).map(l => {
+    const m = l.match(/^(?:(\d+)\s*[x×]?\s+)?(.+?)(?:\s+\+(\d+)\s*d?)?$/i);
+    const name = m[2].trim(), t = types.find(x => x.toLowerCase() === name.toLowerCase());
+    return normI({ id: uid(), projectId, type: t || 'Other', title: t || name, qty: m[1] || 1, status: 'Pending', due: date ? addDays(date, m[3] ? +m[3] : days) : '' });
+  });
+}
+const tplSummary = type => tplItems(type, '', '').map(itemLabel).join(' · ');
 // What is still to deliver for a project, grouped by type: "Reel ×2 · Photos".
 function leftSummary(id) {
   const by = {};
@@ -1055,7 +1068,10 @@ function renderSettings() {
       <label class="field"><span>Where clients find you (one per line)</span><textarea id="s-sources" rows="5">${esc(setting('sources'))}</textarea></label>
       <label class="field"><span>Expense categories (one per line)</span><textarea id="s-expenseCats" rows="6">${esc(setting('expenseCats'))}</textarea></label>
       <label class="field"><span>Deliverable types (one per line)</span><textarea id="s-itemTypes" rows="6">${esc(setting('itemTypes'))}</textarea></label>
-      <div class="grid2">${f('postDays', 'Remind to post free shoots after (days)', 'number')}${f('deliverDays', 'Flag slow deliveries after (days)', 'number')}</div></section>
+      <div class="grid2">${f('postDays', 'Remind to post free shoots after (days)', 'number')}${f('deliverDays', 'Usual delivery time (days after the shoot)', 'number')}</div></section>
+    <section class="panel stack"><h2>Deliverables per shoot type</h2>
+      <p class="fine">Added to every new booking of that type. One per line: <b>Photos</b>, <b>2 Reel</b> (how many), <b>Album +30</b> (due 30 days after the shoot; otherwise the usual delivery time). Leave empty to add nothing.</p>
+      ${list('types').map((t, i) => `<label class="field"><span>${esc(t)}</span><textarea id="s-tpl-${i}" data-tpl="${esc(t)}" rows="3">${esc(tplText(t))}</textarea></label>`).join('')}</section>
     <section class="panel stack"><h2>Data</h2>
       <p class="fine">Import the projects from your old dashboard (its data.json file). This adds them to the Sheet; anything with the same ID is updated, not doubled.</p>
       <label class="btn sm" style="align-self:flex-start">Import old data.json<input type="file" id="sImport" accept=".json,application/json" hidden></label>
@@ -1063,7 +1079,8 @@ function renderSettings() {
   </div>
   <div class="modal-acts"><button class="btn primary" id="sSave">Save settings</button></div>`;
   $('#sSave').onclick = () => {
-    const rows = Object.keys(DEFAULTS).map(k => ({ id: k, value: $('#s-' + k) ? $('#s-' + k).value.trim() : setting(k) }));
+    const rows = Object.keys(DEFAULTS).map(k => ({ id: k, value: $('#s-' + k) ? $('#s-' + k).value.trim() : setting(k) }))
+      .concat($$('[data-tpl]').map(el => ({ id: 'tpl:' + el.dataset.tpl, value: el.value.trim() })));
     rows.forEach(r => { const i = db.settings.findIndex(s => s.id === r.id); if (i === -1) db.settings.push(r); else db.settings[i] = r; });
     saveLocal(); push({ action: 'upsert', table: 'settings', rows }); toast('Settings saved');
   };
@@ -1112,12 +1129,13 @@ function openProject(id, preset, tab) {
       <label class="field"><span>Location (address or Google Maps link)</span><input id="f-location" value="${esc(p.location)}"></label>
       <div class="grid2"><label class="check"><input type="checkbox" id="f-marketing" ${p.marketing ? 'checked' : ''}> Free shoot for my page</label>
         <label class="check"><input type="checkbox" id="f-posted" ${p.posted ? 'checked' : ''}> Posted on social</label></div>
+      ${isNew ? `<label class="check tpl-chk"><input type="checkbox" id="f-tpl" ${preset && preset._tpl === false ? '' : 'checked'}> <span id="f-tplTxt"></span></label>` : ''}
     </section>
     <section class="dr-sec" data-pt="overview"><h3>Money <button type="button" class="linkbtn" data-ptab-go="money">Details ›</button></h3>
       <div class="money-sum" id="ovMoney"></div>
       <div class="wa-menu" id="ovActs"></div>
     </section>
-    <section class="dr-sec" data-pt="items"><h3>Deliverables <button type="button" class="linkbtn" id="itAdd">+ Add</button></h3>
+    <section class="dr-sec" data-pt="items"><h3>Deliverables <span class="h3-acts"><button type="button" class="linkbtn" id="itTpl"></button><button type="button" class="linkbtn" id="itAdd">+ Add</button></span></h3>
       <div class="items" id="items"></div>
     </section>
     <section class="dr-sec" data-pt="money" data-new><h3>Money</h3>
@@ -1206,13 +1224,23 @@ function openProject(id, preset, tab) {
       date: val('date'), time: val('time'), location: val('location'), marketing: $('#f-marketing').checked, posted: $('#f-posted').checked,
       price: val('price'), paid: val('paid'), expenses: val('expenses'), drive: val('drive'), notes: $('#f-notes').value.trim(),
     });
+    if (isNew && $('#f-tpl').checked && !items.length) items = tplItems($('#f-type').value, val('date'), out.id);
     const its = items.filter(i => i.title.trim()).map(i => normI({ ...i, projectId: out.id, title: i.title.trim(), notes: String(i.notes || '').trim() }));
     const team = crew.filter(c => c.name.trim() || num(c.fee)).map(c => normC({ ...c, projectId: out.id, name: c.name.trim() }));
     saveProject(out, its, team);
     if (close) { closeLayers(); render(); toast(isNew ? 'Booking added' : 'Saved'); } else { Object.assign(p, out); ui.keepScroll = true; render(); }
     return true;
   };
-  showTab(tab); drawMoney(); drawItems(); drawCrew(); if (!isNew) drawDocs();
+  // The usual deliverables for the chosen type: ticked on a new booking, a one-tap add on an existing one.
+  const drawTpl = () => {
+    const type = $('#f-type').value, t = tplSummary(type);
+    if (isNew) { $('#f-tplTxt').textContent = `Add the usual deliverables: ${t}`; $('.tpl-chk', dr).hidden = !t; return; }
+    const have = new Set(items.map(i => (i.title || i.type).trim().toLowerCase()));
+    const missing = tplItems(type, val('date'), p.id).filter(i => !have.has(i.title.toLowerCase()));
+    $('#itTpl').hidden = !missing.length; $('#itTpl').textContent = `+ Usual for ${type}`;
+    $('#itTpl').onclick = () => { items.push(...missing); drawItems(); drawTpl(); toast(`${missing.length} added. Save to keep them.`); };
+  };
+  showTab(tab); drawMoney(); drawItems(); drawCrew(); drawTpl(); if (!isNew) drawDocs();
   $('#pForm').addEventListener('input', e => {
     const row = e.target.closest('.item');
     if (row && e.target.dataset.k) {
@@ -1234,10 +1262,11 @@ function openProject(id, preset, tab) {
       }
     }
     if (['f-price', 'f-paid', 'f-expenses', 'f-status', 'f-marketing'].includes(e.target.id) || ck === 'fee' || ck === 'name') drawMoney();
+    if (['f-type', 'f-date'].includes(e.target.id) || e.target.dataset.k === 'title') drawTpl();
   });
   $('#crew').addEventListener('click', e => { const rm = e.target.closest('[data-crm]'); if (rm) { crew.splice(+rm.dataset.crm, 1); drawCrew(); drawMoney(); } });
   $('#crAdd').onclick = () => { crew.push({ id: uid(), projectId: p.id, name: '', role: 'Photographer', fee: 0, paidOn: '', notes: '' }); drawCrew(); $$('#crew .crew-row input[data-ck=name]').pop().focus(); };
-  $('#items').addEventListener('click', e => { const rm = e.target.closest('[data-rm]'); if (rm) { items.splice(+rm.dataset.rm, 1); drawItems(); } });
+  $('#items').addEventListener('click', e => { const rm = e.target.closest('[data-rm]'); if (rm) { items.splice(+rm.dataset.rm, 1); drawItems(); drawTpl(); } });
   $('#itAdd').onclick = () => { items.push({ id: uid(), projectId: p.id, type: list('itemTypes')[0] || '', qty: 1, title: '', status: 'Pending', due: '', notes: '' }); drawItems(); $$('#items .item input[data-k=title]').pop().focus(); };
   $('#pSave').onclick = () => save(true);
   if (isNew) return;
@@ -1266,11 +1295,14 @@ function openQuickAdd(date) {
       <label class="field"><span>Time</span><input id="q-time" type="time"></label>
     </div>
     <div class="grid2"><label class="check"><input type="checkbox" id="q-inq"> Just an inquiry (not confirmed)</label><label class="check"><input type="checkbox" id="q-free"> Free shoot for my page</label></div>
+    <label class="check tpl-chk"><input type="checkbox" id="q-tpl" checked> <span id="q-tplTxt"></span></label>
     <datalist id="dl-q">${clientNames().map(c => `<option value="${esc(c)}">`).join('')}</datalist>
     <div class="modal-acts"><button type="button" class="btn ghost" id="qMore">More details</button><button type="submit" class="btn primary">Add booking</button></div>
   </form>`;
   showLayer(m);
   setTimeout(() => $('#q-client')?.focus(), 50);
+  const drawTpl = () => { const t = tplSummary($('#q-type').value); $('#q-tplTxt').textContent = `Add the usual deliverables: ${t}`; $('.tpl-chk', m).hidden = !t; };
+  drawTpl(); $('#q-type').addEventListener('change', drawTpl);
   $('#q-client').addEventListener('change', e => {
     const prev = db.projects.find(p => p.client.toLowerCase() === e.target.value.trim().toLowerCase() && p.phone);
     if (prev && !$('#q-phone').value) $('#q-phone').value = prev.phone;
@@ -1284,14 +1316,15 @@ function openQuickAdd(date) {
       instagram: prev ? prev.instagram : '', email: prev ? prev.email : '', source: prev ? prev.source : '',
     };
   };
-  $('#qMore').onclick = () => { const v = read(); closeLayers(); openProject(null, v); };
+  $('#qMore').onclick = () => { const v = { ...read(), _tpl: $('#q-tpl').checked }; closeLayers(); openProject(null, v); };
   $('#qForm').onsubmit = e => {
     e.preventDefault();
     const v = read();
     if (!v.client) return;
     const p = normP({ id: uid(), code: nextCode(), created: today(), ...v });
-    saveProject(p, []); closeLayers(); render();
-    toast(`${p.code} added${p.date ? ' for ' + fmtDate(p.date) : ''}`);
+    const its = $('#q-tpl').checked ? tplItems(p.type, p.date, p.id) : [];
+    saveProject(p, its); closeLayers(); render();
+    toast(`${p.code} added${p.date ? ' for ' + fmtDate(p.date) : ''}${its.length ? ` with ${its.length} deliverable${its.length === 1 ? '' : 's'}` : ''}`);
   };
 }
 

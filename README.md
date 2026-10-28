@@ -5,6 +5,7 @@ A static web app (GitHub Pages) that reads and writes a private Google Sheet thr
 
 - **Today**: money to collect, deliveries due or late (tick them off inline), upcoming shoots with a countdown, loose ends, and the month calendar
 - **Projects**: a list with one-tap status (Booked → Shot → Editing → Delivered), search and filters, or a pipeline board with a column per stage (drag cards, or tap the next step). Each project opens in tabs: Overview, Deliverables, Money, Invoices & quotes, Notes
+- **Deliverables per shoot type**: each new booking gets the usual deliverables for its type, with due dates from the shoot date (edit the lists in Settings)
 - **Clients**: built from your projects, with lifetime value, what they owe and WhatsApp
 - **Money**: booked, collected, expenses, profit, 12‑month chart, who still owes; sub-tabs for Invoices & quotes, Expenses and Team
 - **More (…)**: Retainers and Settings
