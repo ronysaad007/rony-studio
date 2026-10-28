@@ -17,11 +17,15 @@ const TABLES = {
              'location', 'price', 'paid', 'expenses', 'status', 'marketing', 'posted', 'source',
              'drive', 'notes', 'created', 'updated'],
   items: ['id', 'projectId', 'title', 'status', 'due', 'notes'],
+  crew: ['id', 'projectId', 'name', 'role', 'fee', 'paidOn', 'notes'],
+  retainers: ['id', 'client', 'brand', 'phone', 'instagram', 'platforms', 'fee', 'adBudget', 'start', 'renewal',
+              'nextReport', 'posts', 'reels', 'stories', 'status', 'paidMonths', 'services', 'notes', 'created', 'updated'],
   settings: ['id', 'value'],
 };
-const SHEET_NAMES = { projects: 'Projects', items: 'Deliverables', settings: 'Settings' };
+const SHEET_NAMES = { projects: 'Projects', items: 'Deliverables', crew: 'Team', retainers: 'Retainers', settings: 'Settings' };
 // Columns stored as plain text so Sheets never turns them into numbers or dates.
-const TEXT_COLS = ['id', 'projectId', 'code', 'phone', 'date', 'time', 'due', 'created', 'updated', 'value'];
+const TEXT_COLS = ['id', 'projectId', 'code', 'phone', 'date', 'time', 'due', 'created', 'updated', 'value',
+                   'paidOn', 'start', 'renewal', 'nextReport', 'paidMonths'];
 const MAX_FAILS = 5, LOCK_SECONDS = 15 * 60;
 
 function setup() {
@@ -56,7 +60,8 @@ function doPost(e) {
   try {
     switch (req.action) {
       case 'all':
-        return out_({ ok: true, projects: read_('projects'), items: read_('items'), settings: read_('settings') });
+        return out_({ ok: true, projects: read_('projects'), items: read_('items'), crew: read_('crew'),
+                      retainers: read_('retainers'), settings: read_('settings') });
       case 'upsert':
         upsert_(req.table, req.rows || []);
         return out_({ ok: true });
