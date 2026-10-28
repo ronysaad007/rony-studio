@@ -339,6 +339,14 @@ td.n,th.n{text-align:right}
 .money-sum div{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:10px 12px}
 .money-sum small{display:block;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);font-weight:700}
 .money-sum b{font-family:var(--f-display);font-size:clamp(14px,4vw,18px);font-variant-numeric:tabular-nums;white-space:nowrap}
+.plan{display:flex;flex-direction:column;gap:6px}
+.plan:empty{display:none}
+.plan-it{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:var(--r);background:var(--panel)}
+.plan-it b{display:block;font-weight:600;font-size:14px}
+.plan-it small{display:block;color:var(--faint);font-size:12.5px}
+.plan-it.late{border-color:#ff5d5d66}.plan-it.late small{color:var(--bad);font-weight:600}
+.plan-it.done{opacity:.6}
+.warn-t{color:var(--bad)}
 .payrow{display:flex;gap:8px}
 .payrow input{flex:1}
 @media (max-width:560px){.payrow{flex-wrap:wrap}.payrow input{flex:1 1 100%}}

@@ -112,6 +112,13 @@ const normX = x => ({ id: String(x.id), date: String(x.date || today()), categor
 // A saved invoice or quotation. `data` is a JSON snapshot, so it reprints exactly as it was sent.
 const normD = d => ({ id: String(d.id), projectId: String(d.projectId || ''), kind: d.kind === 'quote' ? 'quote' : 'invoice', no: String(d.no || ''), date: String(d.date || today()), client: String(d.client || ''), total: num(d.total), data: String(d.data || '{}'), created: String(d.created || '') });
 const docsOf = id => db.docs.filter(d => d.projectId === id).sort((a, b) => b.created.localeCompare(a.created));
+// The deposit asked in a project's latest quotation, and how much of it is still to come.
+function depositOf(p, paid = p.paid) {
+  const q = docsOf(p.id).find(d => d.kind === 'quote'); if (!q) return null;
+  let s; try { s = JSON.parse(q.data); } catch (e) { return null; }
+  const amt = Math.round(s.deposit != null ? num(s.deposit) : num(s.price) * num(s.pct) / 100);
+  return amt ? { amt, due: s.depDue || s.valid || '', left: Math.max(0, amt - paid), no: q.no } : null;
+}
 const normC = c => ({ id: String(c.id), projectId: String(c.projectId), name: String(c.name || ''), role: String(c.role || 'Photographer'), fee: num(c.fee), paidOn: String(c.paidOn || ''), notes: String(c.notes || '') });
 function normR(r) {
   return {
@@ -290,6 +297,7 @@ function waText(p, kind) {
   const name = setting('businessName');
   if (kind === 'confirm') return `Hi ${first}, this is ${name}. Your ${p.type || 'shoot'} is confirmed for ${when}${p.location && !/^https?:/.test(p.location) ? ' at ' + p.location : ''}.${p.price ? ` Total: ${money(p.price)}${p.paid ? `, received ${money(p.paid)}` : ''}.` : ''} Looking forward to it!`;
   if (kind === 'remind') return `Hi ${first}, a quick reminder about your ${p.type || 'shoot'} on ${when}. See you there! — ${name}`;
+  if (kind === 'deposit') { const dep = depositOf(p) || { left: 0 }; return `Hi ${first}, thank you for choosing ${name}! To confirm your ${p.type || 'shoot'}${p.date ? ' on ' + fmtDate(p.date) : ''}, the deposit is ${money(dep.left)}${dep.due ? `, by ${fmtDate(dep.due)}` : ''}.${setting('payInfo') ? '\n\n' + setting('payInfo') : ''}\n\nThank you! — ${name}`; }
   if (kind === 'pay') return `Hi ${first}, hope you're well! A friendly reminder that ${money(balance(p))} is still due for "${p.title}". ${setting('payInfo') ? '\n\n' + setting('payInfo') : ''}\n\nThank you! — ${name}`;
   if (kind === 'ready') return `Hi ${first}, your ${p.title} files are ready!${p.drive ? ' ' + p.drive : ''} Hope you love them. A review or tag on Instagram would mean a lot. — ${name}`;
   return '';
@@ -406,14 +414,21 @@ function renderToday() {
   const owed = db.projects.filter(p => p.status !== 'Cancelled' && !p.marketing && balance(p) > 0)
     .sort((a, b) => dueNow(b) - dueNow(a) || dayOf(a).localeCompare(dayOf(b)));
   const rets = db.retainers.filter(retDue);
+  // Before the shoot, a quotation's unpaid deposit is what to chase.
+  const deps = owed.filter(p => !dueNow(p)).map(p => ({ p, dep: depositOf(p) })).filter(x => x.dep && x.dep.left)
+    .sort((a, b) => (a.dep.due || '9999').localeCompare(b.dep.due || '9999'));
   const owedTotal = owed.reduce((s, p) => s + balance(p), 0) + rets.reduce((s, r) => s + r.fee, 0);
-  const nowTotal = owed.filter(dueNow).reduce((s, p) => s + balance(p), 0) + rets.reduce((s, r) => s + r.fee, 0);
+  const nowTotal = owed.filter(dueNow).reduce((s, p) => s + balance(p), 0) + rets.reduce((s, r) => s + r.fee, 0)
+    + deps.filter(x => x.dep.due && x.dep.due <= t).reduce((s, x) => s + x.dep.left, 0);
   const collectRow = p => `<div class="alert ${dueNow(p) ? 'bad' : 'info'}" data-open="${p.id}" data-ptab="money" role="button" tabindex="0"><i class="sev"></i>
     <div><b>${money(balance(p))} · ${esc(p.title)}</b><small>${esc(p.client)} · ${p.paid ? `paid ${money(p.paid)} of ${money(p.price)}` : 'nothing paid yet'} · ${p.date ? (dueNow(p) ? 'shot ' : 'shoot ') + fmtDate(p.date) : 'no date'}</small></div>
     <div class="acts">${dueNow(p) ? waBtn(p, 'pay', 'Remind') : ''}<button class="btn sm" data-paid="${p.id}">Mark paid</button></div></div>`;
+  const depRow = ({ p, dep }) => { const late = dep.due && dep.due < t; return `<div class="alert ${late ? 'bad' : 'warn'}" data-open="${p.id}" data-ptab="money" role="button" tabindex="0"><i class="sev"></i>
+    <div><b>${money(dep.left)} deposit · ${esc(p.title)}</b><small>${esc(p.client)} · ${dep.due ? (late ? `was due ${fmtDate(dep.due)} (${daysBetween(dep.due, t)} days late)` : dep.due === t ? 'due today' : 'due ' + fmtDate(dep.due)) : 'no due date'} · ${esc(dep.no)}${p.date ? ' · shoot ' + fmtDate(p.date) : ''}</small></div>
+    <div class="acts">${waBtn(p, 'deposit', 'Remind')}<button class="btn sm" data-dep-paid="${p.id}">Deposit paid</button></div></div>`; };
   const retRow = r => `<div class="alert bad" data-ret-open="${r.id}" role="button" tabindex="0"><i class="sev"></i><div><b>${money(r.fee)} · ${esc(r.client)} monthly fee</b><small>${monthName(thisMonth())} not received yet</small></div><div class="acts">${waRetBtn(r)}<button class="btn sm" data-ret-month="${r.id}" data-m="${thisMonth()}">Mark paid</button></div></div>`;
   const grp = (label, rows) => (rows.length ? `<div class="alert-group">${label} <span class="n">${rows.length}</span></div>${rows.join('')}` : '');
-  const collect = owed.length || rets.length ? `<div class="alerts">${grp('Due now', owed.filter(dueNow).map(collectRow).concat(rets.map(retRow)))}${grp('Booked, not shot yet', owed.filter(p => !dueNow(p)).map(collectRow))}</div>` : '<p class="allclear">Everyone has paid.</p>';
+  const collect = owed.length || rets.length ? `<div class="alerts">${grp('Due now', owed.filter(dueNow).map(collectRow).concat(rets.map(retRow)))}${grp('Deposits', deps.map(depRow))}${grp('Booked, not shot yet', owed.filter(p => !dueNow(p) && !deps.some(x => x.p === p)).map(collectRow))}</div>` : '<p class="allclear">Everyone has paid.</p>';
 
   const upcoming = db.projects.filter(p => p.date >= t && !['Cancelled', 'Inquiry', 'Delivered'].includes(p.status)).sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
   const next = upcoming[0];
@@ -537,10 +552,11 @@ function kcard(p) {
   const t = today(), [pay, payCls] = payState(p), its = itemsOf(p.id), done = its.filter(i => i.status === 'Delivered').length;
   const late = its.filter(i => i.status !== 'Delivered' && i.due && i.due < t).length;
   const passed = p.date && p.date < t && ['Inquiry', 'Booked'].includes(p.status), nx = NEXT[p.status];
+  const dep = ['Inquiry', 'Booked'].includes(p.status) && !p.marketing ? depositOf(p) : null;
   return `<div class="kcard" draggable="true" data-open="${p.id}" data-id="${p.id}" role="button" tabindex="0">
     <b>${esc(p.title || p.client)}</b><small>${esc(p.client)}${p.type ? ' · ' + esc(p.type) : ''}</small>
     <span class="kdate ${passed ? 'late' : ''}">${p.date ? fmtDate(p.date) : 'No date'}${p.time ? ' · ' + fmtTime(p.time) : ''}</span>
-    <div class="ktags">${['Inquiry', 'Cancelled'].includes(p.status) ? '' : `<span class="tag ${payCls}">${pay}</span>`}${its.length && ['Shot', 'Editing', 'Delivered'].includes(p.status) ? `<span class="tag ${done === its.length ? 't-ok' : 't-mute'}">${done}/${its.length} delivered</span>` : ''}${late ? `<span class="tag t-bad">${late} late</span>` : ''}${passed ? '<span class="tag t-warn">Date passed</span>' : ''}${p.marketing ? '<b>Free</b>' : p.price ? `<b>${money(p.price)}</b>` : ''}</div>
+    <div class="ktags">${['Inquiry', 'Cancelled'].includes(p.status) ? '' : `<span class="tag ${payCls}">${pay}</span>`}${its.length && ['Shot', 'Editing', 'Delivered'].includes(p.status) ? `<span class="tag ${done === its.length ? 't-ok' : 't-mute'}">${done}/${its.length} delivered</span>` : ''}${late ? `<span class="tag t-bad">${late} late</span>` : ''}${passed ? '<span class="tag t-warn">Date passed</span>' : ''}${dep && dep.left ? `<span class="tag ${dep.due && dep.due < t ? 't-bad' : 't-warn'}">Deposit ${dep.due && dep.due < t ? 'late' : 'due'}</span>` : ''}${p.marketing ? '<b>Free</b>' : p.price ? `<b>${money(p.price)}</b>` : ''}</div>
     ${nx ? `<button type="button" class="btn sm knext" data-status="${p.id}" data-to="${nx[0]}">${nx[1]} →</button>` : ''}</div>`;
 }
 function drawBoard() {
@@ -1144,7 +1160,8 @@ function openProject(id, preset, tab) {
         <label class="field"><span>Received</span><input id="f-paid" type="number" inputmode="decimal" min="0" value="${p.paid || ''}"></label>
         <label class="field"><span>Other expenses</span><input id="f-expenses" type="number" inputmode="decimal" min="0" value="${p.expenses || ''}"></label></div>
       <div class="money-sum" id="moneySum"></div>
-      ${isNew ? '' : `<div id="linkedExp"></div>
+      ${isNew ? '' : `<div class="plan" id="plan"></div>
+      <div id="linkedExp"></div>
       <div class="payrow"><input id="payAmt" type="number" inputmode="decimal" min="0" placeholder="Add a payment you received"><button type="button" class="btn sm" id="payAdd">Add payment</button><button type="button" class="btn sm ghost" id="payFull">Paid in full</button></div>`}
     </section>
     <section class="dr-sec" data-pt="money"><h3>Team <button type="button" class="linkbtn" id="crAdd">+ Add</button></h3>
@@ -1186,12 +1203,20 @@ function openProject(id, preset, tab) {
     const lx = expensesOf(p.id);
     $('#moneySum').innerHTML = `<div><small>Balance</small><b style="color:${price - paid > 0 ? 'var(--bad)' : 'var(--ok)'}">${money(Math.max(0, price - paid))}</b></div><div><small>Profit${crew.length || lx.length ? ' after costs' : ''}</small><b>${money(price - ex)}</b></div><div><small>Margin</small><b>${price ? Math.round((price - ex) / price * 100) : 0}%</b></div>`;
     if (isNew) return;
+    const dep = depositOf(now, paid);
+    $('#plan').innerHTML = dep ? `<div class="plan-it ${dep.left ? (dep.due && dep.due < today() ? 'late' : '') : 'done'}"><span><b>Deposit ${money(dep.amt)}</b><small>${esc(dep.no)}${dep.due ? ' · due ' + fmtDate(dep.due) : ''}</small></span>
+        ${dep.left ? `<button type="button" class="btn sm" id="depIn">Deposit received</button>` : '<span class="tag t-ok">Received</span>'}</div>
+      <div class="plan-it ${bal ? '' : 'done'}"><span><b>Balance ${money(Math.max(0, price - Math.max(paid, dep.amt)))}</b><small>after the shoot${now.date ? ', ' + fmtDate(now.date) : ''}</small></span>${bal ? '' : '<span class="tag t-ok">Paid</span>'}</div>`
+      : '<p class="fine">No deposit set. Choose one when you make a quotation (Invoices &amp; quotes tab).</p>';
+    if ($('#depIn')) $('#depIn').onclick = () => { $('#f-paid').value = Math.max(paid, dep.amt); drawMoney(); toast('Deposit added. Save to keep it.'); };
     $('#linkedExp').innerHTML = `<div class="linked">${lx.map(x => `<button type="button" class="chip" data-exp-open="${x.id}">${esc(x.note || x.category)} · ${money(x.amount)}</button>`).join('')}<button type="button" class="linkbtn" id="lxAdd">+ Log an expense for this shoot</button></div>`;
     $('#lxAdd').onclick = () => openExpense(null, { projectId: p.id, date: today() }, drawMoney);
     $('#ovMoney').innerHTML = now.marketing ? '<div><small>Free shoot</small><b>For your page</b></div>'
       : `<div><small>Price</small><b>${money(price)}</b></div><div><small>Received</small><b>${money(paid)}</b></div><div><small>Balance</small><b style="color:${bal ? 'var(--bad)' : 'var(--ok)'}">${money(bal)}</b></div>`;
-    $('#ovActs').innerHTML = `${bal && !now.marketing ? '<button type="button" class="btn sm" id="ovPaid">Mark paid</button>' : ''}${waBtn(p, 'confirm', 'Confirm booking')}${waBtn(p, 'remind', 'Shoot reminder')}${bal ? waBtn(p, 'pay', 'Payment reminder') : ''}${waBtn(p, 'ready', 'Files ready')}`
+    $('#ovActs').innerHTML = `${dep && dep.left ? '<button type="button" class="btn sm" id="ovDep">Deposit paid</button>' : ''}${bal && !now.marketing ? '<button type="button" class="btn sm" id="ovPaid">Mark paid</button>' : ''}${dep && dep.left ? waBtn(p, 'deposit', 'Deposit reminder') : ''}${waBtn(p, 'confirm', 'Confirm booking')}${waBtn(p, 'remind', 'Shoot reminder')}${bal ? waBtn(p, 'pay', 'Payment reminder') : ''}${waBtn(p, 'ready', 'Files ready')}`
       || '<p class="fine">Add a phone number and save to send WhatsApp messages from here.</p>';
+    const od = $('#ovDep');
+    if (od) od.onclick = () => { $('#f-paid').value = Math.max(paid, dep.amt); drawMoney(); if (save(false)) toast(`${val('client')}: deposit received`); };
     const mp = $('#ovPaid');
     if (mp) mp.onclick = () => { $('#f-paid').value = val('price'); drawMoney(); if (save(false)) toast(`${val('client')} marked paid`); };
   };
@@ -1274,7 +1299,7 @@ function openProject(id, preset, tab) {
   $('#payAdd').onclick = () => { const a = num($('#payAmt').value); if (!a) return; $('#f-paid').value = num(val('paid')) + a; $('#payAmt').value = ''; drawMoney(); toast(`${money(a)} added. Save to keep it.`); };
   $('#payFull').onclick = () => { $('#f-paid').value = val('price'); drawMoney(); };
   $('#pInvoice').onclick = () => { printInvoice(project(p.id)); drawDocs(); };
-  $('#pQuote').onclick = () => { printInvoice(project(p.id), 'quote'); drawDocs(); };
+  $('#pQuote').onclick = () => openQuote(project(p.id), () => { drawDocs(); drawMoney(); });
   const del = $('#pDel');
   del.onclick = () => {
     if (!del.classList.contains('arm')) { del.classList.add('arm'); del.textContent = 'Tap again to delete'; return; }
@@ -1411,7 +1436,7 @@ function closeLayers() {
 // Styled like ronysaad.com: dark page, orange glow, Space Grotesk, thin lines.
 const docDate = d => new Date(d + 'T00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 const docKind = k => (k === 'quote' ? 'Quotation' : 'Invoice');
-function docSnapshot(p, kind) {
+function docSnapshot(p, kind, dep) {
   const quote = kind === 'quote';
   const days = Math.max(1, num(setting('quoteDays')) || 14);
   return {
@@ -1419,21 +1444,23 @@ function docSnapshot(p, kind) {
     title: p.title, type: p.type, location: p.location, date: p.date, time: p.time,
     items: itemsOf(p.id).map(i => ({ title: i.title || i.type, type: i.type, qty: i.qty })),
     price: p.price, paid: p.paid, balance: balance(p),
-    pct: quote ? Math.min(100, Math.max(0, num(setting('quoteDeposit')))) : 0,
+    pct: quote ? (dep ? dep.pct : Math.min(100, Math.max(0, num(setting('quoteDeposit'))))) : 0,
     valid: quote ? ymd(new Date(Date.now() + days * 864e5)) : '',
+    ...(quote && dep ? { deposit: dep.amt, depDue: dep.due } : {}),
     payInfo: setting('payInfo'), note: setting(quote ? 'quoteNote' : 'invoiceNote'),
     biz: { name: setting('businessName'), tagline: setting('tagline'), address: setting('address'), phone: setting('phone'), email: setting('email'), website: setting('website'), currency: setting('currency') },
   };
 }
 function docHtml(s, d) {
   const quote = s.kind === 'quote', b = s.biz, year = d.date.slice(0, 4);
+  const dep = s.deposit != null ? num(s.deposit) : num(s.price) * num(s.pct) / 100;
   const cash = v => `${esc(b.currency)} ${Math.round(num(v)).toLocaleString('en-US')}`;
   const logo = `<span class="doc-logo">${esc(b.name.toUpperCase()).replace(' ', '<span>.</span>')}<em>®</em></span>`;
   const line = (label, value, cls = '') => `<div class="doc-line ${cls}"><span>${label}</span><b>${value}</b></div>`;
   const items = s.items.length ? s.items : [{ title: s.title, type: s.type, qty: 1 }];
   const rows = items.map((i, n) => `<tr><td class="doc-no">${String(n + 1).padStart(2, '0')}</td><td><b>${esc(i.title)}</b>${i.type && i.type !== i.title ? `<small>${esc(i.type)}</small>` : ''}</td><td class="n">${i.qty}</td></tr>`).join('');
   const totals = quote
-    ? line('Total', cash(s.price), 'big') + (s.pct ? line(`Deposit to confirm · ${s.pct}%`, cash(s.price * s.pct / 100)) : '')
+    ? line('Total', cash(s.price), 'big') + (dep ? line(`Deposit to confirm${s.pct ? ' · ' + s.pct + '%' : ''}${s.depDue ? ' · by ' + docDate(s.depDue) : ''}`, cash(dep)) + (dep < s.price ? line('Balance after deposit', cash(s.price - dep)) : '') : '')
     : line('Total', cash(s.price)) + line('Received', cash(s.paid)) + line('Balance due', cash(s.balance), 'big');
   const contact = [b.website, b.phone, b.email].filter(Boolean).map(esc).join('<i>/</i>');
   return `
@@ -1455,8 +1482,8 @@ function docHtml(s, d) {
 }
 // Make an invoice or quotation for a project, save it, then print. Pressing the button again
 // without changing anything reprints the saved one instead of saving a copy.
-function printInvoice(p, kind = 'invoice') {
-  const snap = docSnapshot(p, kind), data = JSON.stringify(snap);
+function printInvoice(p, kind = 'invoice', dep) {
+  const snap = docSnapshot(p, kind, dep), data = JSON.stringify(snap);
   const mine = docsOf(p.id).filter(d => d.kind === kind);
   let d = mine.find(x => x.data === data && x.date === today());
   if (!d) {
@@ -1466,6 +1493,43 @@ function printInvoice(p, kind = 'invoice') {
     toast(`${docKind(kind)} ${d.no} saved`);
   }
   printDoc(d);
+}
+// Choose the deposit for this client before making the quotation. Opens over the project drawer.
+function openQuote(p, after) {
+  const m = $('#modal'), prev = depositOf(p, 0), t = today();
+  const valid = addDays(t, Math.max(1, num(setting('quoteDays')) || 14));
+  const amt0 = prev ? prev.amt : Math.round(p.price * Math.min(100, Math.max(0, num(setting('quoteDeposit')))) / 100);
+  // A deposit that is a round share of the price shows as that % on the quotation.
+  const pctOf = a => { const k = p.price ? Math.round(a / p.price * 100) : 0; return Math.round(p.price * k / 100) === a ? k : 0; };
+  const due0 = prev && prev.due >= t ? prev.due : p.date && p.date < valid ? (p.date > t ? p.date : t) : valid;
+  m.innerHTML = `<form class="modal-card" id="qtForm" autocomplete="off">
+    <div class="ph" style="margin:0"><h2 id="modalTitle">Quotation</h2><button type="button" class="x" data-qclose aria-label="Close">✕</button></div>
+    <p class="fine">${esc(p.title)} · total <b>${money(p.price)}</b>${p.price ? '' : ' · <span class="warn-t">add a price first</span>'}</p>
+    <div class="field"><span>Deposit to confirm</span><div class="chips" id="qtPct">${[0, 25, 30, 50, 100].map(n => `<button type="button" class="chip" data-pct="${n}">${n ? n + '%' : 'None'}</button>`).join('')}</div></div>
+    <div class="grid2"><label class="field"><span>Deposit (${esc(setting('currency'))})</span><input id="qt-amt" type="number" inputmode="decimal" min="0" value="${amt0 || ''}" placeholder="0"></label>
+      <label class="field"><span>Deposit due by</span><input id="qt-due" type="date" value="${esc(due0)}"></label></div>
+    <p class="fine" id="qtSum"></p>
+    ${setting('payInfo') ? '' : '<p class="fine warn-t">Add your bank details in Settings → Payment details so they show on the quotation.</p>'}
+    <div class="modal-acts"><button type="button" class="btn ghost" data-qclose>Cancel</button><button type="submit" class="btn primary">Make quotation</button></div>
+  </form>`;
+  const drawerOpen = !$('#drawer').hidden;
+  if (drawerOpen) m.hidden = false; else showLayer(m);
+  const close = () => { if (drawerOpen) { m.hidden = true; m.innerHTML = ''; } else closeLayers(); };
+  const draw = () => {
+    const a = num($('#qt-amt').value);
+    $$('[data-pct]', m).forEach(b => b.setAttribute('aria-pressed', !!p.price && a === Math.round(p.price * +b.dataset.pct / 100)));
+    $('#qtSum').textContent = a ? `Balance after deposit: ${money(Math.max(0, p.price - a))}` : 'No deposit on this quotation.';
+  };
+  draw();
+  $('#qtPct').onclick = e => { const b = e.target.closest('[data-pct]'); if (!b) return; $('#qt-amt').value = Math.round(p.price * +b.dataset.pct / 100) || ''; draw(); };
+  $('#qt-amt').oninput = draw;
+  $$('[data-qclose]', m).forEach(b => { b.onclick = close; });
+  $('#qtForm').onsubmit = e => {
+    e.preventDefault();
+    const a = Math.min(num($('#qt-amt').value), p.price || Infinity);
+    const due = $('#qt-due').value;
+    close(); printInvoice(p, 'quote', { amt: a, pct: a ? pctOf(a) : 0, due: a ? due : '' }); if (after) after();
+  };
 }
 function printDoc(d) {
   let s; try { s = JSON.parse(d.data); } catch (e) { toast('This document could not be opened', true); return; }
@@ -1593,6 +1657,7 @@ document.addEventListener('click', e => {
   const c = sel => t.closest(sel);
   let el;
   if ((el = c('[data-status]'))) { e.stopPropagation(); ui.keepScroll = true; const p = project(el.dataset.status); patchProject(p.id, { status: el.dataset.to }); toast(`${p.code} → ${el.dataset.to}`); return; }
+  if ((el = c('[data-dep-paid]'))) { ui.keepScroll = true; const p = project(el.dataset.depPaid), dep = depositOf(p); if (dep) patchProject(p.id, { paid: Math.max(p.paid, dep.amt) }); toast(`${p.client}: deposit received`); return; }
   if ((el = c('[data-paid]'))) { ui.keepScroll = true; const p = project(el.dataset.paid); patchProject(p.id, { paid: p.price }); toast(`${p.client} marked paid`); return; }
   if ((el = c('[data-posted]'))) { ui.keepScroll = true; patchProject(el.dataset.posted, { posted: true }); toast('Marked as posted'); return; }
   if ((el = c('[data-item-st]'))) {
