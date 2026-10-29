@@ -52,12 +52,14 @@ let queue = store.get(QUEUE_KEY, []);
 let lastSync = store.get('rs.lastSync', null);
 const ui = { view: 'today', mtab: 'report', filter: 'active', dfilter: 'soon', dShowDone: false, q: '', client: '', calMonth: null, calSel: null, period: 'year', countdown: null };
 
-const STATUSES = ['Inquiry', 'Booked', 'Shot', 'Editing', 'Delivered', 'Cancelled'];
+const STATUSES = ['Inquiry', 'Quoted', 'Booked', 'Shot', 'Editing', 'Delivered', 'Cancelled'];
 const FLOW = ['Booked', 'Shot', 'Editing', 'Delivered'];
 const ITEM_STATUSES = ['Pending', 'Editing', 'Delivered'];
 const ROLES = ['Photographer', 'Videographer', 'Editor', 'Assistant', 'Drone', 'Other'];
 const R_STATUSES = ['Active', 'Paused', 'Cancelled'];
-const ACTIVE = ['Inquiry', 'Booked', 'Shot', 'Editing'];
+const ACTIVE = ['Inquiry', 'Quoted', 'Booked', 'Shot', 'Editing'];
+// Inquiries and quotations aren't bookings yet: they don't count as money, work to deliver or busy days.
+const booked = p => !!p && !['Inquiry', 'Quoted', 'Cancelled'].includes(p.status);
 const DEFAULTS = {
   types: 'Wedding\nBaptism\nPortrait\nEvent\nCommercial\nReal Estate & Construction\nEditorial\nMusic Video\nOther',
   sources: 'Instagram\nWhatsApp\nReferral\nWebsite\nTikTok\nOther',
@@ -72,6 +74,7 @@ const DEFAULTS = {
   quoteDays: '14', quoteDeposit: '50',
   postDays: '7', deliverDays: '14',
 };
+const canDiscount = () => store.get('rs.disc', false);
 const setting = k => { const r = db.settings.find(s => s.id === k); return r && r.value !== '' ? String(r.value) : DEFAULTS[k]; };
 const list = k => setting(k).split('\n').map(s => s.trim()).filter(Boolean);
 const money = v => `${setting('currency')} ${Math.round(num(v)).toLocaleString('en-US')}`;
@@ -81,12 +84,17 @@ function normP(p) {
     id: String(p.id), code: String(p.code || ''), client: String(p.client || ''), phone: String(p.phone || ''),
     email: String(p.email || ''), instagram: String(p.instagram || ''), title: String(p.title || ''), type: String(p.type || ''),
     date: String(p.date || ''), time: String(p.time || ''), location: String(p.location || ''),
-    price: num(p.price), paid: num(p.paid), expenses: num(p.expenses),
+    price: num(p.price), discount: normDisc(p.discount), paid: num(p.paid), expenses: num(p.expenses),
     status: STATUSES.includes(p.status) ? p.status : 'Booked', marketing: bool(p.marketing), posted: bool(p.posted),
     source: String(p.source || ''), drive: String(p.drive || ''), notes: String(p.notes || ''),
     created: String(p.created || today()), updated: String(p.updated || ''),
   };
 }
+// A discount is "10%" or a fixed amount ("500"). price stays the full price; net() is what the client pays.
+function normDisc(v) { const t = String(v ?? '').replace(/[\s,]/g, ''); if (/^\d+(\.\d+)?%$/.test(t)) return t; const n = num(t); return n > 0 ? String(n) : ''; }
+const discAmt = (price, d) => { const t = normDisc(d); if (!t) return 0; return Math.min(num(price), Math.round(t.endsWith('%') ? num(price) * num(t) / 100 : num(t))); };
+const net = p => Math.max(0, num(p.price) - discAmt(p.price, p.discount));
+const discLabel = d => { const t = normDisc(d); return t ? (t.endsWith('%') ? t : money(t)) : ''; };
 const normI = i => ({ id: String(i.id), projectId: String(i.projectId), type: String(i.type || ''), qty: Math.max(1, num(i.qty) || 1), title: String(i.title || ''), status: ITEM_STATUSES.includes(i.status) ? i.status : 'Pending', due: String(i.due || ''), notes: String(i.notes || '') });
 const itemLabel = i => `${i.qty > 1 ? i.qty + '× ' : ''}${i.title || i.type}`;
 // What each shoot type usually includes, one deliverable per line: "Photos", "2 Reel", "Album +30" (due 30 days after the shoot).
@@ -152,10 +160,10 @@ const crewOf = id => db.crew.filter(c => c.projectId === id);
 const crewCost = id => crewOf(id).reduce((s, c) => s + c.fee, 0);
 const expensesOf = id => db.expenses.filter(x => x.projectId === id);
 const linkedCost = id => expensesOf(id).reduce((s, x) => s + x.amount, 0);
-const balance = p => Math.max(0, p.price - p.paid);
+const balance = p => Math.max(0, net(p) - p.paid);
 // Everything the shoot cost you: other expenses, your team, and logged expenses linked to it.
 const cost = p => p.expenses + crewCost(p.id) + linkedCost(p.id);
-const profit = p => p.price - cost(p);
+const profit = p => net(p) - cost(p);
 const thisMonth = () => today().slice(0, 7);
 const monthName = mk => `${MONTHS[+mk.slice(5) - 1]} ${mk.slice(0, 4)}`;
 const addMonths = (s, n) => { const d = parseDay(s); d.setMonth(d.getMonth() + n); return ymd(d); };
@@ -167,11 +175,11 @@ const dayOf = p => p.date || p.created;
 function payState(p) {
   if (p.marketing) return ['Free shoot', 't-info'];
   if (!p.price) return ['No price', 't-warn'];
-  if (p.paid >= p.price) return ['Paid', 't-ok'];
+  if (p.paid >= net(p)) return ['Paid', 't-ok'];
   if (p.paid > 0) return ['Partial', 't-warn'];
   return ['Unpaid', 't-bad'];
 }
-const STATUS_TAG = { Inquiry: 't-mute', Booked: 't-info', Shot: 't-acc', Editing: 't-warn', Delivered: 't-ok', Cancelled: 't-mute' };
+const STATUS_TAG = { Inquiry: 't-mute', Quoted: 't-acc', Booked: 't-info', Shot: 't-acc', Editing: 't-warn', Delivered: 't-ok', Cancelled: 't-mute' };
 const nextCode = () => 'PR-' + String(db.projects.reduce((m, p) => Math.max(m, Number(p.code.replace(/\D/g, '')) || 0), 0) + 1).padStart(4, '0');
 
 // ───────────────────────────── sync ─────────────────────────────
@@ -239,6 +247,7 @@ async function pull(silent) {
       settings: (j.settings || []).map(s => ({ id: String(s.id), value: String(s.value ?? '') })),
     };
     lastSync = Date.now(); store.set('rs.lastSync', lastSync);
+    store.set('rs.disc', (j.projects || []).some(r => 'discount' in r));
     saveLocal(); setSync('ok', 'Synced'); ui.keepScroll = true; render();
   } catch (e) {
     setSync('off', 'Offline');
@@ -303,7 +312,7 @@ function waText(p, kind) {
   const first = p.client.split(/\s+/)[0] || 'there';
   const when = p.date ? `${fmtDate(p.date)}${p.time ? ' at ' + fmtTime(p.time) : ''}` : 'the date we agreed';
   const name = setting('businessName');
-  if (kind === 'confirm') return `Hi ${first}, this is ${name}. Your ${p.type || 'shoot'} is confirmed for ${when}${p.location && !/^https?:/.test(p.location) ? ' at ' + p.location : ''}.${p.price ? ` Total: ${money(p.price)}${p.paid ? `, received ${money(p.paid)}` : ''}.` : ''} Looking forward to it!`;
+  if (kind === 'confirm') return `Hi ${first}, this is ${name}. Your ${p.type || 'shoot'} is confirmed for ${when}${p.location && !/^https?:/.test(p.location) ? ' at ' + p.location : ''}.${p.price ? ` Total: ${money(net(p))}${p.paid ? `, received ${money(p.paid)}` : ''}.` : ''} Looking forward to it!`;
   if (kind === 'remind') return `Hi ${first}, a quick reminder about your ${p.type || 'shoot'} on ${when}. See you there! — ${name}`;
   if (kind === 'deposit') { const dep = depositOf(p) || { left: 0 }; return `Hi ${first}, thank you for choosing ${name}! To confirm your ${p.type || 'shoot'}${p.date ? ' on ' + fmtDate(p.date) : ''}, the deposit is ${money(dep.left)}${dep.due ? `, by ${fmtDate(dep.due)}` : ''}.${setting('payInfo') ? '\n\n' + setting('payInfo') : ''}\n\nThank you! — ${name}`; }
   if (kind === 'pay') return `Hi ${first}, hope you're well! A friendly reminder that ${money(balance(p))} is still due for "${p.title}". ${setting('payInfo') ? '\n\n' + setting('payInfo') : ''}\n\nThank you! — ${name}`;
@@ -328,7 +337,7 @@ function alerts() {
     const ref = `${p.code} · ${p.client}`;
     if (!p.marketing && balance(p) > 0 && ['Shot', 'Editing', 'Delivered'].includes(p.status))
       out.push({ g: 'Collect payment', money: true, sev: 'bad', p, title: `${money(balance(p))} due · ${p.title}`, sub: ref, act: 'pay' });
-    if (p.date && p.date < t && ['Inquiry', 'Booked'].includes(p.status))
+    if (p.date && p.date < t && ['Inquiry', 'Quoted', 'Booked'].includes(p.status))
       out.push({ g: 'Date passed', sev: 'warn', p, title: `${p.title} was on ${fmtDate(p.date)}`, sub: 'Still marked ' + p.status, act: 'shot' });
     if (!p.date && ACTIVE.includes(p.status))
       out.push({ g: 'Missing info', sev: 'info', p, title: `${p.title} has no shoot date`, sub: ref, act: 'open' });
@@ -341,7 +350,7 @@ function alerts() {
   });
   db.items.forEach(i => {
     const p = project(i.projectId);
-    if (!p || p.status === 'Cancelled' || i.status === 'Delivered' || !i.due) return;
+    if (!booked(p) || i.status === 'Delivered' || !i.due) return;
     if (i.due < t) out.push({ g: 'Overdue deliveries', sev: 'bad', p, item: i, title: `${itemLabel(i)} · ${p.title}`, sub: `Was due ${fmtDate(i.due)} (${daysBetween(i.due, t)} days late)`, act: 'item' });
     else if (i.due <= addDays(t, 1)) out.push({ g: 'Due soon', sev: 'warn', p, item: i, title: `${itemLabel(i)} · ${p.title}`, sub: `Due ${i.due === t ? 'today' : 'tomorrow'}`, act: 'item' });
   });
@@ -392,7 +401,7 @@ function renderAlerts(all, limit) {
 // ───────────────────────────── shared pieces ─────────────────────────────
 function steps(p) {
   if (p.status === 'Cancelled') return '<span class="tag t-mute">Cancelled</span>';
-  if (p.status === 'Inquiry') return `<span class="steps"><button type="button" class="cur">Inquiry</button><button type="button" data-status="${p.id}" data-to="Booked">Confirm →</button></span>`;
+  if (['Inquiry', 'Quoted'].includes(p.status)) return `<span class="steps"><button type="button" class="cur">${p.status === 'Quoted' ? 'Quote sent' : 'Inquiry'}</button><button type="button" data-status="${p.id}" data-to="Booked">Confirm →</button></span>`;
   const idx = FLOW.indexOf(p.status);
   return `<span class="steps" role="group" aria-label="Status">${FLOW.map((s, i) => `<button type="button" data-status="${p.id}" data-to="${s}" class="${i < idx ? 'done' : i === idx ? 'cur' : ''}" aria-pressed="${i === idx}">${s}</button>`).join('')}</span>`;
 }
@@ -409,7 +418,7 @@ function projectRow(p) {
     <div class="main"><strong>${esc(p.title || p.client)}</strong>
       <small>${esc(p.client)}${p.type ? ' · ' + esc(p.type) : ''}${p.time ? ' · ' + fmtTime(p.time) : ''}${its.length ? ` · ${done}/${its.length} delivered` : ''}${left ? ` · left: ${esc(left)}` : ''}</small></div>
     ${steps(p)}
-    <div class="money"><b>${p.marketing ? 'Free' : money(p.price)}</b><span class="tag ${payCls}">${pay}${!p.marketing && balance(p) && p.paid ? ' · ' + money(balance(p)) + ' left' : ''}</span></div>
+    <div class="money"><b>${p.marketing ? 'Free' : money(net(p))}</b><span class="tag ${payCls}">${pay}${!p.marketing && balance(p) && p.paid ? ' · ' + money(balance(p)) + ' left' : ''}</span></div>
   </div>`;
 }
 const clientNames = () => [...new Set(db.projects.map(p => p.client).filter(Boolean))].sort();
@@ -420,20 +429,20 @@ const clientNames = () => [...new Set(db.projects.map(p => p.client).filter(Bool
 function collectPanel() {
   const t = today();
   const dueNow = p => ['Shot', 'Editing', 'Delivered'].includes(p.status) || (p.date && p.date < t);
-  const owed = db.projects.filter(p => p.status !== 'Cancelled' && !p.marketing && balance(p) > 0)
+  const owed = db.projects.filter(p => booked(p) && !p.marketing && balance(p) > 0)
     .sort((a, b) => dueNow(b) - dueNow(a) || dayOf(a).localeCompare(dayOf(b)));
   const rets = db.retainers.filter(retDue);
   // Before the shoot, a quotation's unpaid deposit is what to chase.
-  const deps = owed.filter(p => !dueNow(p)).map(p => ({ p, dep: depositOf(p) })).filter(x => x.dep && x.dep.left)
+  const deps = owed.filter(p => !dueNow(p)).concat(db.projects.filter(p => p.status === 'Quoted' && !p.marketing)).map(p => ({ p, dep: depositOf(p) })).filter(x => x.dep && x.dep.left)
     .sort((a, b) => (a.dep.due || '9999').localeCompare(b.dep.due || '9999'));
   const owedTotal = owed.reduce((s, p) => s + balance(p), 0) + rets.reduce((s, r) => s + r.fee, 0);
   const nowTotal = owed.filter(dueNow).reduce((s, p) => s + balance(p), 0) + rets.reduce((s, r) => s + r.fee, 0)
     + deps.filter(x => x.dep.due && x.dep.due <= t).reduce((s, x) => s + x.dep.left, 0);
   const collectRow = p => `<div class="alert ${dueNow(p) ? 'bad' : 'info'}" data-open="${p.id}" data-ptab="money" role="button" tabindex="0"><i class="sev"></i>
-    <div><b>${money(balance(p))} · ${esc(p.title)}</b><small>${esc(p.client)} · ${p.paid ? `paid ${money(p.paid)} of ${money(p.price)}` : 'nothing paid yet'} · ${p.date ? (dueNow(p) ? 'shot ' : 'shoot ') + fmtDate(p.date) : 'no date'}</small></div>
+    <div><b>${money(balance(p))} · ${esc(p.title)}</b><small>${esc(p.client)} · ${p.paid ? `paid ${money(p.paid)} of ${money(net(p))}` : 'nothing paid yet'} · ${p.date ? (dueNow(p) ? 'shot ' : 'shoot ') + fmtDate(p.date) : 'no date'}</small></div>
     <div class="acts">${dueNow(p) ? waBtn(p, 'pay', 'Remind') : ''}<button class="btn sm" data-paid="${p.id}">Mark paid</button></div></div>`;
   const depRow = ({ p, dep }) => { const late = dep.due && dep.due < t; return `<div class="alert ${late ? 'bad' : 'warn'}" data-open="${p.id}" data-ptab="money" role="button" tabindex="0"><i class="sev"></i>
-    <div><b>${money(dep.left)} deposit · ${esc(p.title)}</b><small>${esc(p.client)} · ${dep.due ? (late ? `was due ${fmtDate(dep.due)} (${daysBetween(dep.due, t)} days late)` : dep.due === t ? 'due today' : 'due ' + fmtDate(dep.due)) : 'no due date'} · ${esc(dep.no)}${p.date ? ' · shoot ' + fmtDate(p.date) : ''}</small></div>
+    <div><b>${money(dep.left)} deposit · ${esc(p.title)}${p.status === 'Quoted' ? ' <span class="tag t-acc">Quote</span>' : ''}</b><small>${esc(p.client)} · ${dep.due ? (late ? `was due ${fmtDate(dep.due)} (${daysBetween(dep.due, t)} days late)` : dep.due === t ? 'due today' : 'due ' + fmtDate(dep.due)) : 'no due date'} · ${esc(dep.no)}${p.date ? ' · shoot ' + fmtDate(p.date) : ''}</small></div>
     <div class="acts">${waBtn(p, 'deposit', 'Remind')}<button class="btn sm" data-dep-paid="${p.id}">Deposit paid</button></div></div>`; };
   const retRow = r => `<div class="alert bad" data-ret-open="${r.id}" role="button" tabindex="0"><i class="sev"></i><div><b>${money(r.fee)} · ${esc(r.client)} monthly fee</b><small>${monthName(thisMonth())} not received yet</small></div><div class="acts">${waRetBtn(r)}<button class="btn sm" data-ret-month="${r.id}" data-m="${thisMonth()}">Mark paid</button></div></div>`;
   const grp = (label, rows) => (rows.length ? `<div class="alert-group">${label} <span class="n">${rows.length}</span></div>${rows.join('')}` : '');
@@ -444,16 +453,16 @@ function collectPanel() {
 // Today: what's booked, what's still to deliver, and a quick way to add a booking. Money lives on the Money page.
 function renderToday() {
   const t = today(), now = new Date(), week = addDays(t, 7);
-  const upcoming = db.projects.filter(p => p.date >= t && !['Cancelled', 'Inquiry', 'Delivered'].includes(p.status)).sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
+  const upcoming = db.projects.filter(p => p.date >= t && booked(p) && p.status !== 'Delivered').sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
   const next = upcoming[0], thisWeek = upcoming.filter(p => p.date <= week).length;
-  const inquiries = db.projects.filter(p => p.status === 'Inquiry').sort((a, b) => (a.date || '9999').localeCompare(b.date || '9999'));
-  const openItems = db.items.filter(i => i.status !== 'Delivered' && project(i.projectId) && project(i.projectId).status !== 'Cancelled');
+  const inquiries = db.projects.filter(p => ['Inquiry', 'Quoted'].includes(p.status)).sort((a, b) => (a.date || '9999').localeCompare(b.date || '9999'));
+  const openItems = db.items.filter(i => i.status !== 'Delivered' && booked(project(i.projectId)));
   const late = openItems.filter(i => i.due && i.due < t).length, soon = openItems.filter(i => i.due && i.due >= t && i.due <= week).length;
   const rest = alerts().filter(a => !a.money && !['Overdue deliveries', 'Due soon'].includes(a.g));
   const hour = now.getHours();
   const greet = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
   const loc = p => (p.location ? (/^https?:/.test(p.location) ? `<a class="linkbtn" href="${esc(p.location)}" target="_blank" rel="noopener">Open location ↗</a>` : esc(p.location)) : '');
-  const side = `${inquiries.length ? `<section class="panel"><div class="ph"><h2>Inquiries</h2><small>waiting to confirm</small></div><div class="mini">${inquiries.slice(0, 6).map(p => `<div class="mini-it" data-open="${p.id}" role="button" tabindex="0"><div><b>${esc(p.title || p.client)}</b><small>${esc(p.client)}${p.type ? ' · ' + esc(p.type) : ''}</small></div><div class="r">${p.date ? fmtDate(p.date) : '<small>No date</small>'}</div></div>`).join('')}</div>
+  const side = `${inquiries.length ? `<section class="panel"><div class="ph"><h2>Inquiries &amp; quotes</h2><small>waiting to confirm</small></div><div class="mini">${inquiries.slice(0, 6).map(p => `<div class="mini-it" data-open="${p.id}" role="button" tabindex="0"><div><b>${esc(p.title || p.client)}</b><small>${esc(p.client)}${p.type ? ' · ' + esc(p.type) : ''}</small></div><div class="r"><span class="tag ${STATUS_TAG[p.status]}">${p.status === 'Quoted' ? 'Quote sent' : 'Inquiry'}</span><small>${p.date ? fmtDate(p.date) : 'No date'}</small></div></div>`).join('')}</div>
       ${inquiries.length > 6 ? `<a class="linkbtn" href="#projects/board">All ${inquiries.length} on the board →</a>` : ''}</section>` : ''}
     ${rest.length ? `<section class="panel"><div class="ph"><h2>Also needs you</h2><small>${rest.length} item${rest.length === 1 ? '' : 's'}</small></div>${renderAlerts(rest)}</section>` : ''}`;
   const main = `<section class="panel" id="t-shoots"><div class="ph"><h2>Upcoming shoots</h2><button class="linkbtn" data-jump="t-cal">Calendar ↓</button></div>
@@ -506,7 +515,7 @@ function filteredProjects() {
   const F = {
     active: p => ACTIVE.includes(p.status),
     attention: p => att.has(p.id),
-    unpaid: p => !p.marketing && p.status !== 'Cancelled' && balance(p) > 0,
+    unpaid: p => !p.marketing && booked(p) && balance(p) > 0,
     delivered: p => p.status === 'Delivered',
     marketing: p => p.marketing,
     all: () => true,
@@ -528,7 +537,7 @@ function renderProjects() {
   const counts = {
     active: db.projects.filter(p => ACTIVE.includes(p.status)).length,
     attention: att,
-    unpaid: db.projects.filter(p => !p.marketing && p.status !== 'Cancelled' && balance(p) > 0).length,
+    unpaid: db.projects.filter(p => !p.marketing && booked(p) && balance(p) > 0).length,
     delivered: db.projects.filter(p => p.status === 'Delivered').length,
     marketing: db.projects.filter(p => p.marketing).length,
     all: db.projects.length,
@@ -559,16 +568,16 @@ function drawRows() {
 
 // ───────────────────────────── pipeline board ─────────────────────────────
 // One column per stage. Drag a card to another column, or use its button to move it one stage on.
-const NEXT = { Inquiry: ['Booked', 'Confirm booking'], Booked: ['Shot', 'Mark shot'], Shot: ['Editing', 'Start editing'], Editing: ['Delivered', 'Mark delivered'] };
+const NEXT = { Inquiry: ['Booked', 'Confirm booking'], Quoted: ['Booked', 'Client accepted'], Booked: ['Shot', 'Mark shot'], Shot: ['Editing', 'Start editing'], Editing: ['Delivered', 'Mark delivered'] };
 function kcard(p) {
   const t = today(), [pay, payCls] = payState(p), its = itemsOf(p.id), done = its.filter(i => i.status === 'Delivered').length;
   const late = its.filter(i => i.status !== 'Delivered' && i.due && i.due < t).length;
-  const passed = p.date && p.date < t && ['Inquiry', 'Booked'].includes(p.status), nx = NEXT[p.status];
-  const dep = ['Inquiry', 'Booked'].includes(p.status) && !p.marketing ? depositOf(p) : null;
+  const passed = p.date && p.date < t && ['Inquiry', 'Quoted', 'Booked'].includes(p.status), nx = NEXT[p.status];
+  const dep = ['Inquiry', 'Quoted', 'Booked'].includes(p.status) && !p.marketing ? depositOf(p) : null;
   return `<div class="kcard" draggable="true" data-open="${p.id}" data-id="${p.id}" role="button" tabindex="0">
     <b>${esc(p.title || p.client)}</b><small>${esc(p.client)}${p.type ? ' · ' + esc(p.type) : ''}</small>
     <span class="kdate ${passed ? 'late' : ''}">${p.date ? fmtDate(p.date) : 'No date'}${p.time ? ' · ' + fmtTime(p.time) : ''}</span>
-    <div class="ktags">${['Inquiry', 'Cancelled'].includes(p.status) ? '' : `<span class="tag ${payCls}">${pay}</span>`}${its.length && ['Shot', 'Editing', 'Delivered'].includes(p.status) ? `<span class="tag ${done === its.length ? 't-ok' : 't-mute'}">${done}/${its.length} delivered</span>` : ''}${late ? `<span class="tag t-bad">${late} late</span>` : ''}${passed ? '<span class="tag t-warn">Date passed</span>' : ''}${dep && dep.left ? `<span class="tag ${dep.due && dep.due < t ? 't-bad' : 't-warn'}">Deposit ${dep.due && dep.due < t ? 'late' : 'due'}</span>` : ''}${p.marketing ? '<b>Free</b>' : p.price ? `<b>${money(p.price)}</b>` : ''}</div>
+    <div class="ktags">${!booked(p) ? '' : `<span class="tag ${payCls}">${pay}</span>`}${its.length && ['Shot', 'Editing', 'Delivered'].includes(p.status) ? `<span class="tag ${done === its.length ? 't-ok' : 't-mute'}">${done}/${its.length} delivered</span>` : ''}${late ? `<span class="tag t-bad">${late} late</span>` : ''}${passed ? '<span class="tag t-warn">Date passed</span>' : ''}${dep && dep.left ? `<span class="tag ${dep.due && dep.due < t ? 't-bad' : 't-warn'}">Deposit ${dep.due && dep.due < t ? 'late' : 'due'}</span>` : ''}${p.marketing ? '<b>Free</b>' : p.price ? `<b>${money(net(p))}</b>` : ''}</div>
     ${nx ? `<button type="button" class="btn sm knext" data-status="${p.id}" data-to="${nx[0]}">${nx[1]} →</button>` : ''}</div>`;
 }
 function drawBoard() {
@@ -581,7 +590,7 @@ function drawBoard() {
   bd.innerHTML = cols.map(s => {
     const ps = rows.filter(p => p.status === s).sort(ACTIVE.includes(s) ? asc : desc);
     const shown = ACTIVE.includes(s) || narrowed ? ps : ps.slice(0, 12);
-    const val = ps.filter(p => !p.marketing).reduce((sum, p) => sum + p.price, 0);
+    const val = ps.filter(p => !p.marketing).reduce((sum, p) => sum + net(p), 0);
     return `<section class="kcol" data-col="${s}" id="col-${s}" aria-label="${s}"><div class="kh"><span class="tag ${STATUS_TAG[s]}">${s}</span><b>${ps.length}</b><small>${val ? money(val) : ''}</small></div>
       <div class="klist">${shown.map(kcard).join('') || '<p class="kempty">Nothing here</p>'}
       ${ps.length > shown.length ? `<button class="linkbtn" data-filter="${s === 'Delivered' ? 'delivered' : 'all'}">${ps.length - shown.length} older in the list →</button>` : ''}</div></section>`;
@@ -608,8 +617,8 @@ function calendarSection() {
   const start = new Date(first); start.setDate(1 - first.getDay());
   const byDay = {};
   const add = (d, e) => { (byDay[d] = byDay[d] || []).push(e); };
-  db.projects.filter(p => p.date && p.status !== 'Cancelled').forEach(p => add(p.date, { kind: p.marketing ? 'free' : 'shoot', p, label: `${p.time ? fmtTime(p.time).replace(':00', '') + ' ' : ''}${p.client}` }));
-  db.items.filter(i => i.due && i.status !== 'Delivered').forEach(i => { const p = project(i.projectId); if (p && p.status !== 'Cancelled') add(i.due, { kind: 'due', p, label: `Due: ${itemLabel(i)}` }); });
+  db.projects.filter(p => p.date && p.status !== 'Cancelled').forEach(p => add(p.date, { kind: p.marketing || !booked(p) ? 'free' : 'shoot', p, label: `${booked(p) ? '' : p.status === 'Quoted' ? 'Quote: ' : 'Inquiry: '}${p.time ? fmtTime(p.time).replace(':00', '') + ' ' : ''}${p.client}` }));
+  db.items.filter(i => i.due && i.status !== 'Delivered').forEach(i => { const p = project(i.projectId); if (booked(p)) add(i.due, { kind: 'due', p, label: `Due: ${itemLabel(i)}` }); });
   let cells = '';
   for (let k = 0; k < 42; k++) {
     const d = new Date(start); d.setDate(start.getDate() + k);
@@ -627,7 +636,7 @@ function calendarSection() {
   <div class="ph"><div><h2>Calendar</h2><small>${monthShoots.length} shoot${monthShoots.length === 1 ? '' : 's'} in ${MONTHS[m - 1]}</small></div>
     <div class="calnav"><button class="x" data-cal="-1" aria-label="Previous month">‹</button><span class="ttl">${MONTHS[m - 1]} ${y}</span><button class="x" data-cal="1" aria-label="Next month">›</button><button class="btn sm ghost" data-cal="0">Today</button></div></div>
     <div class="cal">${DAYS.map(d => `<div class="cal-h">${d}</div>`).join('')}${cells}</div>
-    <div class="legend"><span><i style="background:var(--accent)"></i>Paid shoot</span><span><i style="background:#ffffff33"></i>Free shoot</span><span><i style="border:1px solid var(--info)"></i>Delivery due</span></div>
+    <div class="legend"><span><i style="background:var(--accent)"></i>Paid shoot</span><span><i style="background:#ffffff33"></i>Free shoot, inquiry or quote</span><span><i style="border:1px solid var(--info)"></i>Delivery due</span></div>
   ${ui.calSel ? `<div class="cal-day"><div class="ph"><h2>${fmtDate(ui.calSel)}</h2><button class="btn sm primary" data-add-day="${ui.calSel}">+ Book this day</button></div>
     ${sel ? `<div class="mini">${sel.map(e => `<div class="mini-it" data-open="${e.p.id}"><div><b>${esc(e.kind === 'due' ? e.label : e.p.title)}</b><small>${esc(e.p.client)}${e.p.location && !/^https?:/.test(e.p.location) ? ' · ' + esc(e.p.location) : ''}</small></div><div class="r">${e.kind === 'due' ? '<span class="tag t-info">Delivery</span>' : `<span class="tag ${STATUS_TAG[e.p.status]}">${e.p.status}</span>`}<small>${e.p.time && e.kind !== 'due' ? fmtTime(e.p.time) : ''}</small></div></div>`).join('')}</div>` : '<div class="empty"><b>Free day</b>Nothing booked.</div>'}
   </div>` : ''}`;
@@ -644,7 +653,7 @@ function periodRange() {
 // logged expenses on their own date; retainers on the months marked paid.
 function moneyStats(from, to) {
   const inRange = d => d >= from && d <= to;
-  const live = db.projects.filter(p => p.status !== 'Cancelled' && inRange(dayOf(p)));
+  const live = db.projects.filter(p => booked(p) && inRange(dayOf(p)));
   const paidP = live.filter(p => !p.marketing);
   const retPaid = db.retainers.flatMap(r => paidMonths(r).filter(m => m >= from.slice(0, 7) && m <= to.slice(0, 7)).map(() => r.fee));
   const retIn = retPaid.reduce((s, v) => s + v, 0);
@@ -652,8 +661,8 @@ function moneyStats(from, to) {
   const team = live.reduce((s, p) => s + crewCost(p.id), 0);
   const other = live.reduce((s, p) => s + p.expenses, 0);
   const logged = ledger.reduce((s, x) => s + x.amount, 0);
-  const revenue = paidP.reduce((s, p) => s + p.price, 0) + retIn;
-  const collected = paidP.reduce((s, p) => s + Math.min(p.paid, p.price || p.paid), 0) + retIn;
+  const revenue = paidP.reduce((s, p) => s + net(p), 0) + retIn;
+  const collected = paidP.reduce((s, p) => s + Math.min(p.paid, net(p) || p.paid), 0) + retIn;
   const spent = team + other + logged;
   return { live, paidP, retPaid, retIn, ledger, team, other, logged, revenue, collected, spent, profit: revenue - spent };
 }
@@ -743,14 +752,14 @@ function chartsBody() {
   const [from, to] = periodRange(), t = today(), per = PERIODS[ui.period], half = chartW(true);
   const inRange = d => d && d >= from && d <= to;
   const bks = periodBuckets();
-  const live = db.projects.filter(p => p.status !== 'Cancelled' && p.status !== 'Inquiry' && inRange(p.date));
+  const live = db.projects.filter(p => booked(p) && inRange(p.date));
   const paidP = live.filter(p => !p.marketing), st = moneyStats(from, to);
   const pct = (a, b) => (b ? Math.round(a / b * 100) : 0);
   const count = (rows, keyOf) => { const m = {}; rows.forEach(r => { const k = keyOf(r) || 'Not recorded'; m[k] = (m[k] || 0) + 1; }); return Object.entries(m).sort((a, b) => b[1] - a[1]); };
   const fold = (rows, max = 7) => (rows.length > max ? rows.slice(0, max - 1).concat([['Other', rows.slice(max - 1).reduce((s, r) => s + r[1], 0)]]) : rows);
   const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
   // Who is new: a client's first ever shoot falls in this slice.
-  const firsts = new Map([...clientMap().values()].map(c => [c.key, c.projects.filter(p => p.status !== 'Cancelled' && p.status !== 'Inquiry').map(p => p.date).filter(Boolean).sort()[0] || '']));
+  const firsts = new Map([...clientMap().values()].map(c => [c.key, c.projects.filter(booked).map(p => p.date).filter(Boolean).sort()[0] || '']));
   const slice = bks.map(b => {
     const ps = live.filter(p => p.date >= b.from && p.date <= b.to), m = moneyStats(b.from, b.to);
     const keys = [...new Set(ps.filter(p => !p.marketing).map(clientKey).filter(Boolean))];
@@ -763,15 +772,15 @@ function chartsBody() {
   const leads = live.filter(p => /^\d{4}-\d{2}-\d{2}/.test(p.created) && p.created.slice(0, 10) <= p.date).map(p => daysBetween(p.created.slice(0, 10), p.date));
   const leadB = LEAD.map(([label, title, a, b]) => ({ label, title, v: { n: leads.filter(d => d >= a && d <= b).length } }));
   const created = db.projects.filter(p => inRange(String(p.created).slice(0, 10)));
-  const won = created.filter(p => !['Inquiry', 'Cancelled'].includes(p.status)).length;
-  const stages = ['Inquiry', 'Booked', 'Shot', 'Editing'].map(sg => ({ k: sg, v: db.projects.filter(p => p.status === sg).length }))
+  const won = created.filter(booked).length;
+  const stages = ['Inquiry', 'Quoted', 'Booked', 'Shot', 'Editing'].map(sg => ({ k: sg, v: db.projects.filter(p => p.status === sg).length }))
     .concat([{ k: 'Delivered', v: db.projects.filter(p => p.status === 'Delivered' && inRange(p.date)).length, sub: per }]);
   const its = db.items.filter(i => live.some(p => p.id === i.projectId));
   const lateN = its.filter(i => i.status !== 'Delivered' && i.due && i.due < t).length;
   const byItem = {}; its.forEach(i => { const k = i.type || i.title || 'Other'; byItem[k] = byItem[k] || { n: 0, q: 0 }; byItem[k].n++; byItem[k].q += i.qty; });
   const done = live.filter(p => p.status === 'Delivered'), posted = done.filter(p => p.posted).length;
   const free = live.filter(p => p.marketing), freePosted = free.filter(p => p.posted).length;
-  const typeRev = {}; paidP.forEach(p => { typeRev[p.type || 'Other'] = (typeRev[p.type || 'Other'] || 0) + p.price; });
+  const typeRev = {}; paidP.forEach(p => { typeRev[p.type || 'Other'] = (typeRev[p.type || 'Other'] || 0) + net(p); });
   const owed = paidP.reduce((sum, p) => sum + balance(p), 0);
   const panel = (title, sub, body, cls = '') => `<section class="panel ${cls}"><div class="ph"><h2>${title}</h2>${sub ? `<small>${sub}</small>` : ''}</div>${body}</section>`;
   return [`${per} · ${plural(live.length, 'shoot')} · ${plural(newC, 'new client')}`, `
@@ -784,14 +793,14 @@ function chartsBody() {
   <h2 class="chart-h">Money</h2>
   ${panel('Revenue, spent &amp; profit', `${per} · by ${bucketUnit(bks).toLowerCase()}`, moneyChart(slice))}
   <div class="cols2">
-    ${panel('Collected so far', `shoots ${per.toLowerCase()}`, stackBar([{ name: 'Collected', v: paidP.reduce((sum, p) => sum + Math.min(p.paid, p.price), 0), c: 'var(--accent)' }, { name: 'Still owed', v: owed, c: GRAY }], 'No paid shoots in this period', money))}
+    ${panel('Collected so far', `shoots ${per.toLowerCase()}`, stackBar([{ name: 'Collected', v: paidP.reduce((sum, p) => sum + Math.min(p.paid, net(p)), 0), c: 'var(--accent)' }, { name: 'Still owed', v: owed, c: GRAY }], 'No paid shoots in this period', money))}
     ${panel('Revenue by shoot type', per, barList(Object.entries(typeRev).sort((a, b) => b[1] - a[1]).map(([k, v]) => ({ k, v, sub: `${plural(paidP.filter(p => (p.type || 'Other') === k).length, 'shoot')} · average ${money(v / paidP.filter(p => (p.type || 'Other') === k).length)}` })), 'No paid shoots in this period'))}
   </div>
   <h2 class="chart-h">Shoots &amp; bookings</h2>
   ${panel('Shoots', `${per} · by ${bucketUnit(bks).toLowerCase()}`, columnChart(slice, [{ k: 'paid', name: 'Paid', color: 'var(--accent)' }, { k: 'free', name: 'Free for your page', color: GRAY }], { stack: true, label: 'Shoots over time', h: 200 }))}
   <div class="cols2">
     ${panel('Pipeline right now', 'projects at each stage', barList(stages.map(x => ({ k: x.k, v: x.v, sub: x.sub || '', attr: 'data-go="projects/board" role="button" tabindex="0"' })), '', nf))}
-    ${panel('Inquiries → bookings', `new projects ${per.toLowerCase()}`, stackBar([{ name: 'Booked', v: won, c: 'var(--accent)' }, { name: 'Still an inquiry', v: created.filter(p => p.status === 'Inquiry').length, c: GRAY }, { name: 'Cancelled', v: created.filter(p => p.status === 'Cancelled').length, c: GRAY2 }], 'No new projects in this period'))}
+    ${panel('Inquiries → bookings', `new projects ${per.toLowerCase()}`, stackBar([{ name: 'Booked', v: won, c: 'var(--accent)' }, { name: 'Still an inquiry or quote', v: created.filter(p => ['Inquiry', 'Quoted'].includes(p.status)).length, c: GRAY }, { name: 'Cancelled', v: created.filter(p => p.status === 'Cancelled').length, c: GRAY2 }], 'No new projects in this period'))}
   </div>
   <div class="cols2">
     ${panel('Busiest days', `shoots by weekday · ${per.toLowerCase()}`, live.length ? columnChart(days, [{ k: 'n', name: 'Shoots', color: 'var(--accent)' }], { w: half, h: 190, label: 'Shoots by weekday' }) : '<div class="empty">No shoots in this period</div>')}
@@ -817,7 +826,7 @@ function moneyReport() {
   const [from, to] = periodRange();
   const st = moneyStats(from, to);
   const pct = (a, b) => (b ? Math.round(a / b * 100) : 0);
-  const owed = db.projects.filter(p => p.status !== 'Cancelled' && !p.marketing && balance(p) > 0).sort((a, b) => balance(b) - balance(a));
+  const owed = db.projects.filter(p => booked(p) && !p.marketing && balance(p) > 0).sort((a, b) => balance(b) - balance(a));
   const owedTotal = owed.reduce((s, p) => s + balance(p), 0) + db.retainers.filter(retDue).reduce((s, r) => s + r.fee, 0);
 
   // Revenue and spending as columns, profit as a line, on one axis, sliced to fit the period.
@@ -835,7 +844,7 @@ function moneyReport() {
   ].filter(Boolean).sort((a, b) => b.v - a.v);
 
   // Clients, sources, types, team
-  const group = (keyOf, rows) => { const m = {}; rows.forEach(p => { const key = keyOf(p) || 'Unknown'; m[key] = m[key] || { v: 0, n: 0, prof: 0 }; m[key].v += p.price; m[key].n++; m[key].prof += profit(p); }); return Object.entries(m).sort((a, b) => b[1].v - a[1].v); };
+  const group = (keyOf, rows) => { const m = {}; rows.forEach(p => { const key = keyOf(p) || 'Unknown'; m[key] = m[key] || { v: 0, n: 0, prof: 0 }; m[key].v += net(p); m[key].n++; m[key].prof += profit(p); }); return Object.entries(m).sort((a, b) => b[1].v - a[1].v); };
   const clients = group(p => p.client, st.paidP).slice(0, 8);
   const sources = group(p => p.source, st.paidP);
   const types = group(p => p.type, st.paidP).map(([t, o]) => ({ k: t, v: o.v, sub: `${o.n} project${o.n === 1 ? '' : 's'} · profit ${money(o.prof)} · ${pct(o.prof, o.v)}% margin` }));
@@ -843,7 +852,7 @@ function moneyReport() {
   types.sort((a, b) => b.v - a.v);
   const people = {};
   st.live.forEach(p => crewOf(p.id).forEach(c => { const key = c.name || c.role; people[key] = people[key] || { v: 0, n: 0, roles: new Set() }; people[key].v += c.fee; people[key].n++; people[key].roles.add(c.role); }));
-  const avg = st.paidP.length ? st.paidP.reduce((s, p) => s + p.price, 0) / st.paidP.length : 0;
+  const avg = st.paidP.length ? st.paidP.reduce((s, p) => s + net(p), 0) / st.paidP.length : 0;
   const per = PERIODS;
   ui.moneySeries = series;
   return [`${per[ui.period]} · ${st.paidP.length} paid project${st.paidP.length === 1 ? '' : 's'} · average ${money(avg)}`, `
@@ -955,7 +964,7 @@ function clientMap() {
     if (!k) return;
     const c = map.get(k) || { key: k, name: p.client, phone: '', email: '', instagram: '', projects: [], n: 0, value: 0, paid: 0, owed: 0, first: dayOf(p), last: '', sources: new Set() };
     c.projects.push(p); c.n++;
-    if (!p.marketing && p.status !== 'Cancelled') { c.value += p.price; c.paid += Math.min(p.paid, p.price || p.paid); c.owed += balance(p); }
+    if (!p.marketing && booked(p)) { c.value += net(p); c.paid += Math.min(p.paid, net(p) || p.paid); c.owed += balance(p); }
     c.last = dayOf(p); if (p.client) c.name = p.client;
     if (p.phone) c.phone = p.phone; if (p.email) c.email = p.email; if (p.instagram) c.instagram = p.instagram; if (p.source) c.sources.add(p.source);
     map.set(k, c);
@@ -1024,7 +1033,7 @@ function openClient(key) {
 // Everything still owed to clients, grouped by project, so it can be worked through without opening each project.
 function deliverGroups() {
   const t = today();
-  return db.projects.filter(p => p.status !== 'Cancelled').map(p => {
+  return db.projects.filter(booked).map(p => {
     const its = itemsOf(p.id), open = its.filter(i => i.status !== 'Delivered');
     const shotOrEditing = ['Shot', 'Editing'].includes(p.status);
     return {
@@ -1196,7 +1205,8 @@ function renderSettings() {
   <div class="vhead"><div><p class="eyebrow">Studio setup</p><h1>Set<span class="o">tings</span></h1></div></div>
   <div class="set-grid">
     <section class="panel stack"><h2>Connection</h2>
-      <dl class="kv"><dt>Sheet link</dt><dd>${esc(cfg.url.replace(/(macros\/s\/.{6}).+(.{6}\/exec)/, '$1…$2'))}</dd><dt>Last sync</dt><dd>${lastSync ? new Date(lastSync).toLocaleString() : 'Never'}</dd><dt>Waiting to save</dt><dd>${queue.length}</dd></dl>
+      <dl class="kv"><dt>Sheet link</dt><dd>${esc(cfg.url.replace(/(macros\/s\/.{6}).+(.{6}\/exec)/, '$1…$2'))}</dd><dt>Last sync</dt><dd>${lastSync ? new Date(lastSync).toLocaleString() : 'Never'}</dd><dt>Waiting to save</dt><dd>${queue.length}</dd><dt>Discounts</dt><dd>${canDiscount() ? 'Ready' : '<span class="warn-t">Update the Apps Script</span>'}</dd></dl>
+      ${canDiscount() ? '' : `<p class="fine">To save discounts, the Sheet needs one more column. In the Sheet: Extensions → Apps Script, replace the code with the new <a class="linkbtn" href="https://github.com/ronysaad007/rony-studio/blob/main/apps-script/Code.gs" target="_blank" rel="noopener">Code.gs</a>, Save, then Deploy → Manage deployments → ✏️ → Version: New version → Deploy. Then press Sync now.</p>`}
       <div class="modal-acts" style="justify-content:flex-start"><button class="btn sm" id="sSync">Sync now</button><button class="btn sm danger" id="sOut">Disconnect this device</button></div>
       <p class="fine">Edit anything straight in the Google Sheet too. Press Sync to pull those changes in.</p></section>
     <section class="panel stack"><h2>Invoice & quotation details</h2>
@@ -1261,7 +1271,7 @@ function renderSettings() {
 // ───────────────────────────── project drawer ─────────────────────────────
 // One form, split into tabs: every field stays inside #pForm and is only hidden, so Save keeps all of them.
 const PTABS = { overview: 'Overview', items: 'Deliverables', money: 'Money', docs: 'Invoices<span class="lg"> &amp; quotes</span>', notes: 'Notes' };
-function openProject(id, preset, tab) {
+function openProject(id, preset, tab, then) {
   const isNew = !id;
   const p = isNew ? normP({ id: uid(), code: nextCode(), status: 'Booked', created: today(), ...preset }) : { ...project(id) };
   if (!p.id) return;
@@ -1303,9 +1313,11 @@ function openProject(id, preset, tab) {
       <div class="items" id="items"></div>
     </section>
     <section class="dr-sec" data-pt="money" data-new><h3>Money</h3>
-      <div class="grid3"><label class="field"><span>Price</span><input id="f-price" type="number" inputmode="decimal" min="0" value="${p.price || ''}"></label>
+      <div class="grid2"><label class="field"><span>Price</span><input id="f-price" type="number" inputmode="decimal" min="0" value="${p.price || ''}"></label>
+        <label class="field"><span>Discount</span><input id="f-discount" value="${esc(p.discount)}" placeholder="10% or 500" ${canDiscount() ? '' : 'disabled'}></label>
         <label class="field"><span>Received</span><input id="f-paid" type="number" inputmode="decimal" min="0" value="${p.paid || ''}"></label>
         <label class="field"><span>Other expenses</span><input id="f-expenses" type="number" inputmode="decimal" min="0" value="${p.expenses || ''}"></label></div>
+      ${canDiscount() ? '' : '<p class="fine warn-t">To save discounts, update the Apps Script once (see Settings → Connection).</p>'}
       <div class="money-sum" id="moneySum"></div>
       ${isNew ? '' : `<div class="plan" id="plan"></div>
       <div id="linkedExp"></div>
@@ -1343,29 +1355,33 @@ function openProject(id, preset, tab) {
   };
   $$('[data-ptab-btn],[data-ptab-go]', dr).forEach(b => { b.onclick = () => showTab(b.dataset.ptabBtn || b.dataset.ptabGo); });
   const drawMoney = () => {
-    const price = num(val('price')), paid = num(val('paid')), ex = num(val('expenses')) + crew.reduce((s, c) => s + num(c.fee), 0) + linkedCost(p.id);
-    const now = normP({ ...p, price, paid, status: $('#f-status').value, marketing: $('#f-marketing').checked });
+    const now = normP({ ...p, price: val('price'), discount: val('discount'), paid: val('paid'), status: $('#f-status').value, marketing: $('#f-marketing').checked });
+    const price = net(now), list = now.price, off = list - price, paid = now.paid, ex = num(val('expenses')) + crew.reduce((s, c) => s + num(c.fee), 0) + linkedCost(p.id);
     const [pay, payCls] = payState(now), bal = balance(now);
-    $('#pSub').innerHTML = `<span class="tag ${STATUS_TAG[now.status]}">${now.status}</span><span class="tag ${payCls}">${pay}</span>`;
+    $('#pSub').innerHTML = `<span class="tag ${STATUS_TAG[now.status]}">${now.status}</span>${booked(now) || now.marketing ? `<span class="tag ${payCls}">${pay}</span>` : ''}`;
     const lx = expensesOf(p.id);
-    $('#moneySum').innerHTML = `<div><small>Balance</small><b style="color:${price - paid > 0 ? 'var(--bad)' : 'var(--ok)'}">${money(Math.max(0, price - paid))}</b></div><div><small>Profit${crew.length || lx.length ? ' after costs' : ''}</small><b>${money(price - ex)}</b></div><div><small>Margin</small><b>${price ? Math.round((price - ex) / price * 100) : 0}%</b></div>`;
+    $('#moneySum').innerHTML = `${off ? `<div><small>Client pays</small><b>${money(price)}</b><small>${discLabel(now.discount)} off ${money(list)}</small></div>` : ''}<div><small>Balance</small><b style="color:${price - paid > 0 ? 'var(--bad)' : 'var(--ok)'}">${money(Math.max(0, price - paid))}</b></div><div><small>Profit${crew.length || lx.length ? ' after costs' : ''}</small><b>${money(price - ex)}</b></div><div><small>Margin</small><b>${price ? Math.round((price - ex) / price * 100) : 0}%</b></div>`;
     if (isNew) return;
     const dep = depositOf(now, paid);
     $('#plan').innerHTML = dep ? `<div class="plan-it ${dep.left ? (dep.due && dep.due < today() ? 'late' : '') : 'done'}"><span><b>Deposit ${money(dep.amt)}</b><small>${esc(dep.no)}${dep.due ? ' · due ' + fmtDate(dep.due) : ''}</small></span>
         ${dep.left ? `<button type="button" class="btn sm" id="depIn">Deposit received</button>` : '<span class="tag t-ok">Received</span>'}</div>
       <div class="plan-it ${bal ? '' : 'done'}"><span><b>Balance ${money(Math.max(0, price - Math.max(paid, dep.amt)))}</b><small>after the shoot${now.date ? ', ' + fmtDate(now.date) : ''}</small></span>${bal ? '' : '<span class="tag t-ok">Paid</span>'}</div>`
       : '<p class="fine">No deposit set. Choose one when you make a quotation (Invoices &amp; quotes tab).</p>';
-    if ($('#depIn')) $('#depIn').onclick = () => { $('#f-paid').value = Math.max(paid, dep.amt); drawMoney(); toast('Deposit added. Save to keep it.'); };
+    if ($('#depIn')) $('#depIn').onclick = () => { $('#f-paid').value = Math.max(paid, dep.amt); if (!booked(now)) $('#f-status').value = 'Booked'; drawMoney(); toast('Deposit added. Save to keep it.'); };
     $('#linkedExp').innerHTML = `<div class="linked">${lx.map(x => `<button type="button" class="chip" data-exp-open="${x.id}">${esc(x.note || x.category)} · ${money(x.amount)}</button>`).join('')}<button type="button" class="linkbtn" id="lxAdd">+ Log an expense for this shoot</button></div>`;
     $('#lxAdd').onclick = () => openExpense(null, { projectId: p.id, date: today() }, drawMoney);
     $('#ovMoney').innerHTML = now.marketing ? '<div><small>Free shoot</small><b>For your page</b></div>'
-      : `<div><small>Price</small><b>${money(price)}</b></div><div><small>Received</small><b>${money(paid)}</b></div><div><small>Balance</small><b style="color:${bal ? 'var(--bad)' : 'var(--ok)'}">${money(bal)}</b></div>`;
-    $('#ovActs').innerHTML = `${dep && dep.left ? '<button type="button" class="btn sm" id="ovDep">Deposit paid</button>' : ''}${bal && !now.marketing ? '<button type="button" class="btn sm" id="ovPaid">Mark paid</button>' : ''}${dep && dep.left ? waBtn(p, 'deposit', 'Deposit reminder') : ''}${waBtn(p, 'confirm', 'Confirm booking')}${waBtn(p, 'remind', 'Shoot reminder')}${bal ? waBtn(p, 'pay', 'Payment reminder') : ''}${waBtn(p, 'ready', 'Files ready')}`
+      : `<div><small>Price</small><b>${money(price)}</b>${off ? `<small>${discLabel(now.discount)} off ${money(list)}</small>` : ''}</div><div><small>Received</small><b>${money(paid)}</b></div><div><small>Balance</small><b style="color:${bal ? 'var(--bad)' : 'var(--ok)'}">${money(bal)}</b></div>`;
+    $('#ovActs').innerHTML = `${['Inquiry', 'Quoted'].includes(now.status) ? `<button type="button" class="btn sm primary" id="ovBook">${now.status === 'Quoted' ? 'Client accepted' : 'Confirm booking'}</button>` : ''}${dep && dep.left ? '<button type="button" class="btn sm" id="ovDep">Deposit paid</button>' : ''}${bal && !now.marketing ? '<button type="button" class="btn sm" id="ovPaid">Mark paid</button>' : ''}${dep && dep.left ? waBtn(p, 'deposit', 'Deposit reminder') : ''}${waBtn(p, 'confirm', 'Confirm booking')}${waBtn(p, 'remind', 'Shoot reminder')}${bal ? waBtn(p, 'pay', 'Payment reminder') : ''}${waBtn(p, 'ready', 'Files ready')}`
       || '<p class="fine">Add a phone number and save to send WhatsApp messages from here.</p>';
     const od = $('#ovDep');
-    if (od) od.onclick = () => { $('#f-paid').value = Math.max(paid, dep.amt); drawMoney(); if (save(false)) toast(`${val('client')}: deposit received`); };
+    // Getting the deposit, or the client saying yes, turns an inquiry or quote into a booking.
+    const book = () => { if (!booked(normP({ ...now, status: $('#f-status').value }))) $('#f-status').value = 'Booked'; };
+    if (od) od.onclick = () => { $('#f-paid').value = Math.max(paid, dep.amt); book(); drawMoney(); if (save(false)) toast(`${val('client')}: deposit received`); };
+    const ob = $('#ovBook');
+    if (ob) ob.onclick = () => { book(); drawMoney(); if (save(false)) toast(`${val('client')} is booked. Check the date and details.`); };
     const mp = $('#ovPaid');
-    if (mp) mp.onclick = () => { $('#f-paid').value = val('price'); drawMoney(); if (save(false)) toast(`${val('client')} marked paid`); };
+    if (mp) mp.onclick = () => { $('#f-paid').value = price; drawMoney(); if (save(false)) toast(`${val('client')} marked paid`); };
   };
   const drawDocs = () => {
     const ds = docsOf(p.id);
@@ -1395,7 +1411,7 @@ function openProject(id, preset, tab) {
       ...p, client: val('client'), phone: val('phone'), instagram: val('instagram'), email: val('email'), source: $('#f-source').value,
       title: val('title') || `${$('#f-type').value} – ${val('client')}`, type: $('#f-type').value, status: $('#f-status').value,
       date: val('date'), time: val('time'), location: val('location'), marketing: $('#f-marketing').checked, posted: $('#f-posted').checked,
-      price: val('price'), paid: val('paid'), expenses: val('expenses'), drive: val('drive'), notes: $('#f-notes').value.trim(),
+      price: val('price'), discount: canDiscount() ? val('discount') : p.discount, paid: val('paid'), expenses: val('expenses'), drive: val('drive'), notes: $('#f-notes').value.trim(),
     });
     const k = fpkg();
     if (isNew && k && !val('title')) out.title = `${k.name} – ${out.client}`;
@@ -1403,7 +1419,8 @@ function openProject(id, preset, tab) {
     const its = items.filter(i => i.title.trim()).map(i => normI({ ...i, projectId: out.id, title: i.title.trim(), notes: String(i.notes || '').trim() }));
     const team = crew.filter(c => c.name.trim() || num(c.fee)).map(c => normC({ ...c, projectId: out.id, name: c.name.trim() }));
     saveProject(out, its, team);
-    if (close) { closeLayers(); render(); toast(isNew ? 'Booking added' : 'Saved'); } else { Object.assign(p, out); ui.keepScroll = true; render(); }
+    if (close && isNew && out.status === 'Quoted') { closeLayers(); render(); openProject(out.id, null, 'docs', 'quote'); }
+    else if (close) { closeLayers(); render(); toast(isNew ? (out.status === 'Inquiry' ? 'Inquiry added' : 'Booking added') : 'Saved'); } else { Object.assign(p, out); ui.keepScroll = true; render(); }
     return true;
   };
   // The usual deliverables for the chosen type: ticked on a new booking, a one-tap add on an existing one.
@@ -1450,7 +1467,7 @@ function openProject(id, preset, tab) {
         if (prev) { c.role = prev.role; c.fee = prev.fee; drawCrew(); }
       }
     }
-    if (['f-price', 'f-paid', 'f-expenses', 'f-status', 'f-marketing'].includes(e.target.id) || ck === 'fee' || ck === 'name') drawMoney();
+    if (['f-price', 'f-discount', 'f-paid', 'f-expenses', 'f-status', 'f-marketing'].includes(e.target.id) || ck === 'fee' || ck === 'name') drawMoney();
     if (['f-type', 'f-date'].includes(e.target.id) || e.target.dataset.k === 'title') drawTpl();
   });
   $('#crew').addEventListener('click', e => { const rm = e.target.closest('[data-crm]'); if (rm) { crew.splice(+rm.dataset.crm, 1); drawCrew(); drawMoney(); } });
@@ -1460,9 +1477,10 @@ function openProject(id, preset, tab) {
   $('#pSave').onclick = () => save(true);
   if (isNew) return;
   $('#payAdd').onclick = () => { const a = num($('#payAmt').value); if (!a) return; $('#f-paid').value = num(val('paid')) + a; $('#payAmt').value = ''; drawMoney(); toast(`${money(a)} added. Save to keep it.`); };
-  $('#payFull').onclick = () => { $('#f-paid').value = val('price'); drawMoney(); };
+  $('#payFull').onclick = () => { $('#f-paid').value = net(normP({ price: val('price'), discount: val('discount') })); drawMoney(); };
   $('#pInvoice').onclick = () => { printInvoice(project(p.id)); drawDocs(); };
-  $('#pQuote').onclick = () => openQuote(project(p.id), () => { drawDocs(); drawMoney(); });
+  $('#pQuote').onclick = () => openQuote(project(p.id), () => { if ($('#f-discount')) $('#f-discount').value = project(p.id).discount; drawDocs(); drawMoney(); });
+  if (then === 'quote') $('#pQuote').click();
   const del = $('#pDel');
   del.onclick = () => {
     if (!del.classList.contains('arm')) { del.classList.add('arm'); del.textContent = 'Tap again to delete'; return; }
@@ -1475,6 +1493,8 @@ function openQuickAdd(date) {
   const m = $('#modal');
   m.innerHTML = `<form class="modal-card" id="qForm" autocomplete="off">
     <div class="ph" style="margin:0"><h2 id="modalTitle">New booking</h2><button type="button" class="x" data-close aria-label="Close">✕</button></div>
+    <div class="seg kind" role="group" aria-label="What is it">${[['Booked', 'Booking'], ['Quoted', 'Quotation']].map(([v, l], i) => `<button type="button" data-kind="${v}" aria-pressed="${!i}">${l}</button>`).join('')}</div>
+    <p class="fine" id="q-kindTxt"></p>
     <div class="grid2">
       <label class="field"><span>Client</span><input id="q-client" list="dl-q" required placeholder="Name"></label>
       <label class="field"><span>Phone</span><input id="q-phone" type="tel" placeholder="+971 5x xxx xxxx"></label>
@@ -1484,13 +1504,19 @@ function openQuickAdd(date) {
       <label class="field"><span>Date</span><input id="q-date" type="date" value="${esc(date || '')}"></label>
       <label class="field"><span>Time</span><input id="q-time" type="time"></label>
     </div>
-    <div class="grid2"><label class="check"><input type="checkbox" id="q-inq"> Just an inquiry (not confirmed)</label><label class="check"><input type="checkbox" id="q-free"> Free shoot for my page</label></div>
+    <label class="check"><input type="checkbox" id="q-free"> Free shoot for my page</label>
     <label class="check tpl-chk"><input type="checkbox" id="q-tpl" checked> <span id="q-tplTxt"></span></label>
     <datalist id="dl-q">${clientNames().map(c => `<option value="${esc(c)}">`).join('')}</datalist>
-    <div class="modal-acts"><button type="button" class="btn ghost" id="qMore">More details</button><button type="submit" class="btn primary">Add booking</button></div>
+    <div class="modal-acts"><button type="button" class="btn ghost" id="qMore">More details</button><button type="submit" class="btn primary" id="qGo">Add booking</button></div>
   </form>`;
   showLayer(m);
   setTimeout(() => $('#q-client')?.focus(), 50);
+  // A quotation isn't a booking yet: it is saved, then the quotation window opens to send it.
+  let kind = 'Booked';
+  const KIND = { Booked: ['Add booking', 'A confirmed booking.'], Quoted: ['Next: quotation', "Saved as a quote, not a booking. If the client says yes, open it and press “Client accepted”."] };
+  const drawKind = () => { $$('[data-kind]', m).forEach(b => b.setAttribute('aria-pressed', b.dataset.kind === kind)); $('#qGo').textContent = KIND[kind][0]; $('#q-kindTxt').textContent = KIND[kind][1]; };
+  $$('[data-kind]', m).forEach(b => { b.onclick = () => { kind = b.dataset.kind; drawKind(); }; });
+  drawKind();
   const qpkg = () => $('#q-pkg') && pkgOf($('#q-pkg').value);
   const drawTpl = () => { const k = qpkg(), t = k ? pkgSummary(k) : tplSummary($('#q-type').value); $('#q-tplTxt').textContent = `${k ? 'Add what ' + k.name + ' includes' : 'Add the usual deliverables'}: ${t}`; $('.tpl-chk', m).hidden = !t; };
   drawTpl(); $('#q-type').addEventListener('change', drawTpl);
@@ -1504,7 +1530,7 @@ function openQuickAdd(date) {
     const prev = db.projects.find(p => p.client.toLowerCase() === client.toLowerCase());
     return {
       client, phone: $('#q-phone').value.trim(), type, title: client ? `${qpkg() ? qpkg().name : type} – ${client}` : '', price: $('#q-price').value, _pkg: qpkg() ? qpkg().id : '',
-      date: $('#q-date').value, time: $('#q-time').value, status: $('#q-inq').checked ? 'Inquiry' : 'Booked', marketing: $('#q-free').checked,
+      date: $('#q-date').value, time: $('#q-time').value, status: kind, marketing: $('#q-free').checked,
       instagram: prev ? prev.instagram : '', email: prev ? prev.email : '', source: prev ? prev.source : '',
     };
   };
@@ -1516,7 +1542,8 @@ function openQuickAdd(date) {
     const p = normP({ id: uid(), code: nextCode(), created: today(), ...v });
     const its = !$('#q-tpl').checked ? [] : v._pkg ? parseItems(pkgOf(v._pkg).items, p.date, p.id) : tplItems(p.type, p.date, p.id);
     saveProject(p, its); closeLayers(); render();
-    toast(`${p.code} added${p.date ? ' for ' + fmtDate(p.date) : ''}${its.length ? ` with ${its.length} deliverable${its.length === 1 ? '' : 's'}` : ''}`);
+    if (p.status === 'Quoted') { openProject(p.id, null, 'docs', 'quote'); return; }
+    toast(`${p.code}${p.status === 'Inquiry' ? ' inquiry' : ''} added${p.date ? ' for ' + fmtDate(p.date) : ''}${its.length ? ` with ${its.length} deliverable${its.length === 1 ? '' : 's'}` : ''}`);
   };
 }
 
@@ -1609,7 +1636,8 @@ function docSnapshot(p, kind, dep) {
     kind, code: p.code, client: p.client, phone: p.phone, email: p.email,
     title: p.title, type: p.type, location: p.location, date: p.date, time: p.time,
     items: itemsOf(p.id).map(i => ({ title: i.title || i.type, type: i.type, qty: i.qty })),
-    price: p.price, paid: p.paid, balance: balance(p),
+    price: net(p), paid: p.paid, balance: balance(p),
+    ...(discAmt(p.price, p.discount) ? { list: p.price, discount: normDisc(p.discount), off: discAmt(p.price, p.discount) } : {}),
     pct: quote ? (dep ? dep.pct : Math.min(100, Math.max(0, num(setting('quoteDeposit'))))) : 0,
     valid: quote ? ymd(new Date(Date.now() + days * 864e5)) : '',
     ...(quote && dep ? { deposit: dep.amt, depDue: dep.due } : {}),
@@ -1625,9 +1653,10 @@ function docHtml(s, d) {
   const line = (label, value, cls = '') => `<div class="doc-line ${cls}"><span>${label}</span><b>${value}</b></div>`;
   const items = s.items.length ? s.items : [{ title: s.title, type: s.type, qty: 1 }];
   const rows = items.map((i, n) => `<tr><td class="doc-no">${String(n + 1).padStart(2, '0')}</td><td><b>${esc(i.title)}</b>${i.type && i.type !== i.title ? `<small>${esc(i.type)}</small>` : ''}</td><td class="n">${i.qty}</td></tr>`).join('');
+  const off = num(s.off) ? line('Price', cash(s.list)) + line(`Discount${String(s.discount).endsWith('%') ? ' · ' + esc(s.discount) : ''}`, '− ' + cash(s.off)) : '';
   const totals = quote
-    ? line('Total', cash(s.price), 'big') + (dep ? line(`Deposit to confirm${s.pct ? ' · ' + s.pct + '%' : ''}${s.depDue ? ' · by ' + docDate(s.depDue) : ''}`, cash(dep)) + (dep < s.price ? line('Balance after deposit', cash(s.price - dep)) : '') : '')
-    : line('Total', cash(s.price)) + line('Received', cash(s.paid)) + line('Balance due', cash(s.balance), 'big');
+    ? off + line('Total', cash(s.price), 'big') + (dep ? line(`Deposit to confirm${s.pct ? ' · ' + s.pct + '%' : ''}${s.depDue ? ' · by ' + docDate(s.depDue) : ''}`, cash(dep)) + (dep < s.price ? line('Balance after deposit', cash(s.price - dep)) : '') : '')
+    : off + line('Total', cash(s.price)) + line('Received', cash(s.paid)) + line('Balance due', cash(s.balance), 'big');
   const contact = [b.website, b.phone, b.email].filter(Boolean).map(esc).join('<i>/</i>');
   return `
   <div class="doc-glow" aria-hidden="true"></div><div class="doc-rings" aria-hidden="true"></div>
@@ -1648,53 +1677,64 @@ function docHtml(s, d) {
 }
 // Make an invoice or quotation for a project, save it, then print. Pressing the button again
 // without changing anything reprints the saved one instead of saving a copy.
-function printInvoice(p, kind = 'invoice', dep) {
+function printInvoice(p, kind = 'invoice', dep, print = true) {
   const snap = docSnapshot(p, kind, dep), data = JSON.stringify(snap);
   const mine = docsOf(p.id).filter(d => d.kind === kind);
   let d = mine.find(x => x.data === data && x.date === today());
   if (!d) {
     const base = (kind === 'quote' ? 'QT-' : 'INV-') + (p.code.replace(/\D/g, '') || p.id.slice(-5));
-    d = normD({ id: uid(), projectId: p.id, kind, no: mine.length ? `${base}-${mine.length + 1}` : base, date: today(), client: p.client, total: kind === 'quote' ? p.price : balance(p), data, created: new Date().toISOString() });
+    d = normD({ id: uid(), projectId: p.id, kind, no: mine.length ? `${base}-${mine.length + 1}` : base, date: today(), client: p.client, total: kind === 'quote' ? net(p) : balance(p), data, created: new Date().toISOString() });
     saveRow('docs', d);
     toast(`${docKind(kind)} ${d.no} saved`);
   }
-  printDoc(d);
+  if (print) printDoc(d);
+  return d;
 }
 // Choose the deposit for this client before making the quotation. Opens over the project drawer.
 function openQuote(p, after) {
   const m = $('#modal'), prev = depositOf(p, 0), t = today();
   const valid = addDays(t, Math.max(1, num(setting('quoteDays')) || 14));
-  const amt0 = prev ? prev.amt : Math.round(p.price * Math.min(100, Math.max(0, num(setting('quoteDeposit')))) / 100);
+  let disc = p.discount;
+  const total = () => net({ price: p.price, discount: disc });
+  const amt0 = prev ? prev.amt : Math.round(total() * Math.min(100, Math.max(0, num(setting('quoteDeposit')))) / 100);
   // A deposit that is a round share of the price shows as that % on the quotation.
-  const pctOf = a => { const k = p.price ? Math.round(a / p.price * 100) : 0; return Math.round(p.price * k / 100) === a ? k : 0; };
+  const pctOf = a => { const k = total() ? Math.round(a / total() * 100) : 0; return Math.round(total() * k / 100) === a ? k : 0; };
   const due0 = prev && prev.due >= t ? prev.due : p.date && p.date < valid ? (p.date > t ? p.date : t) : valid;
   m.innerHTML = `<form class="modal-card" id="qtForm" autocomplete="off">
     <div class="ph" style="margin:0"><h2 id="modalTitle">Quotation</h2><button type="button" class="x" data-qclose aria-label="Close">✕</button></div>
-    <p class="fine">${esc(p.title)} · total <b>${money(p.price)}</b>${p.price ? '' : ' · <span class="warn-t">add a price first</span>'}</p>
+    <p class="fine">${esc(p.title)} · price <b>${money(p.price)}</b>${p.price ? '' : ' · <span class="warn-t">add a price first</span>'}</p>
+    ${canDiscount() ? `<label class="field"><span>Discount (optional)</span><input id="qt-disc" value="${esc(disc)}" placeholder="10% or 500"></label>` : ''}
     <div class="field"><span>Deposit to confirm</span><div class="chips" id="qtPct">${[0, 25, 30, 50, 100].map(n => `<button type="button" class="chip" data-pct="${n}">${n ? n + '%' : 'None'}</button>`).join('')}</div></div>
     <div class="grid2"><label class="field"><span>Deposit (${esc(setting('currency'))})</span><input id="qt-amt" type="number" inputmode="decimal" min="0" value="${amt0 || ''}" placeholder="0"></label>
       <label class="field"><span>Deposit due by</span><input id="qt-due" type="date" value="${esc(due0)}"></label></div>
     <p class="fine" id="qtSum"></p>
     ${setting('payInfo') ? '' : '<p class="fine warn-t">Add your bank details in Settings → Payment details so they show on the quotation.</p>'}
-    <div class="modal-acts"><button type="button" class="btn ghost" data-qclose>Cancel</button><button type="submit" class="btn primary">Make quotation</button></div>
+    <div class="modal-acts"><button type="button" class="btn ghost" data-qclose>Cancel</button><button type="submit" class="btn" value="print">Print</button><button type="submit" class="btn primary" value="send">Send PDF</button></div>
   </form>`;
   const drawerOpen = !$('#drawer').hidden;
   if (drawerOpen) m.hidden = false; else showLayer(m);
   const close = () => { if (drawerOpen) { m.hidden = true; m.innerHTML = ''; } else closeLayers(); };
   const draw = () => {
-    const a = num($('#qt-amt').value);
-    $$('[data-pct]', m).forEach(b => b.setAttribute('aria-pressed', !!p.price && a === Math.round(p.price * +b.dataset.pct / 100)));
-    $('#qtSum').textContent = a ? `Balance after deposit: ${money(Math.max(0, p.price - a))}` : 'No deposit on this quotation.';
+    const a = num($('#qt-amt').value), tot = total(), off = num(p.price) - tot;
+    $$('[data-pct]', m).forEach(b => b.setAttribute('aria-pressed', !!tot && a === Math.round(tot * +b.dataset.pct / 100)));
+    $('#qtSum').textContent = `${off ? `Total after ${discLabel(disc)} discount: ${money(tot)}. ` : ''}${a ? `Balance after deposit: ${money(Math.max(0, tot - a))}` : 'No deposit on this quotation.'}`;
   };
   draw();
-  $('#qtPct').onclick = e => { const b = e.target.closest('[data-pct]'); if (!b) return; $('#qt-amt').value = Math.round(p.price * +b.dataset.pct / 100) || ''; draw(); };
+  $('#qtPct').onclick = e => { const b = e.target.closest('[data-pct]'); if (!b) return; $('#qt-amt').value = Math.round(total() * +b.dataset.pct / 100) || ''; draw(); };
   $('#qt-amt').oninput = draw;
+  // Changing the discount keeps the same deposit share.
+  if ($('#qt-disc')) $('#qt-disc').oninput = () => { const k = pctOf(num($('#qt-amt').value)); disc = normDisc($('#qt-disc').value); if (k) $('#qt-amt').value = Math.round(total() * k / 100); draw(); };
   $$('[data-qclose]', m).forEach(b => { b.onclick = close; });
   $('#qtForm').onsubmit = e => {
     e.preventDefault();
-    const a = Math.min(num($('#qt-amt').value), p.price || Infinity);
-    const due = $('#qt-due').value;
-    close(); printInvoice(p, 'quote', { amt: a, pct: a ? pctOf(a) : 0, due: a ? due : '' }); if (after) after();
+    const send = (e.submitter && e.submitter.value) === 'send';
+    const a = Math.min(num($('#qt-amt').value), total() || Infinity), due = $('#qt-due').value;
+    if (canDiscount() && disc !== p.discount) { patchProject(p.id, { discount: disc }); p = project(p.id); }
+    close();
+    const d = printInvoice(p, 'quote', { amt: a, pct: a ? pctOf(a) : 0, due: a ? due : '' }, !send);
+    ui.keepScroll = true; render();
+    if (send) shareDoc(d);
+    if (after) after();
   };
 }
 function printDoc(d) {
@@ -1780,7 +1820,7 @@ function download(name, text, type) {
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
 }
 function exportCsv() {
-  const cols = ['code', 'client', 'phone', 'title', 'type', 'date', 'time', 'status', 'price', 'paid', 'expenses', 'marketing', 'source', 'location', 'notes'];
+  const cols = ['code', 'client', 'phone', 'title', 'type', 'date', 'time', 'status', 'price', 'discount', 'paid', 'expenses', 'marketing', 'source', 'location', 'notes'];
   const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
   const lines = [cols.concat('balance').join(',')].concat(db.projects.map(p => cols.map(c => q(p[c])).concat(balance(p)).join(',')));
   download(`studio-projects-${today()}.csv`, '﻿' + lines.join('\n'), 'text/csv');
@@ -1871,8 +1911,8 @@ document.addEventListener('click', e => {
   const c = sel => t.closest(sel);
   let el;
   if ((el = c('[data-status]'))) { e.stopPropagation(); ui.keepScroll = true; const p = project(el.dataset.status); patchProject(p.id, { status: el.dataset.to }); toast(`${p.code} → ${el.dataset.to}`); return; }
-  if ((el = c('[data-dep-paid]'))) { ui.keepScroll = true; const p = project(el.dataset.depPaid), dep = depositOf(p); if (dep) patchProject(p.id, { paid: Math.max(p.paid, dep.amt) }); toast(`${p.client}: deposit received`); return; }
-  if ((el = c('[data-paid]'))) { ui.keepScroll = true; const p = project(el.dataset.paid); patchProject(p.id, { paid: p.price }); toast(`${p.client} marked paid`); return; }
+  if ((el = c('[data-dep-paid]'))) { ui.keepScroll = true; const p = project(el.dataset.depPaid), dep = depositOf(p), tentative = !booked(p); if (dep) patchProject(p.id, { paid: Math.max(p.paid, dep.amt), ...(tentative ? { status: 'Booked' } : {}) }); toast(`${p.client}: deposit received${tentative ? ' · now booked' : ''}`); return; }
+  if ((el = c('[data-paid]'))) { ui.keepScroll = true; const p = project(el.dataset.paid); patchProject(p.id, { paid: net(p) }); toast(`${p.client} marked paid`); return; }
   if ((el = c('[data-posted]'))) { ui.keepScroll = true; patchProject(el.dataset.posted, { posted: true }); toast('Marked as posted'); return; }
   if ((el = c('[data-item-st]'))) {
     e.stopPropagation(); ui.keepScroll = true;

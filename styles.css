@@ -338,6 +338,7 @@ td.n,th.n{text-align:right}
 @media (max-width:560px){.dr-tabs{padding:0 4px}.dr-tabs>*{flex:1 0 auto}.dr-tabs .lg{display:none}}
 .h3-acts{display:flex;gap:14px}
 .span2{grid-column:1/-1}
+.seg.kind{display:flex}.seg.kind button{flex:1;padding:10px 8px}
 .pkg{display:flex;flex-direction:column;gap:10px;padding:12px;border:1px solid var(--line);border-radius:var(--r);background:var(--bg2)}
 .pkg-del{align-self:flex-start;color:var(--faint)}
 .pkg-del:hover{color:var(--bad)}

@@ -18,7 +18,7 @@
 const TABLES = {
   projects: ['id', 'code', 'client', 'phone', 'email', 'instagram', 'title', 'type', 'date', 'time',
              'location', 'price', 'paid', 'expenses', 'status', 'marketing', 'posted', 'source',
-             'drive', 'notes', 'created', 'updated', 'calEvent'],
+             'drive', 'notes', 'created', 'updated', 'calEvent', 'discount'],
   items: ['id', 'projectId', 'title', 'status', 'due', 'notes', 'type', 'qty'],
   crew: ['id', 'projectId', 'name', 'role', 'fee', 'paidOn', 'notes'],
   retainers: ['id', 'client', 'brand', 'phone', 'instagram', 'platforms', 'fee', 'adBudget', 'start', 'renewal',
@@ -30,7 +30,7 @@ const TABLES = {
 const SHEET_NAMES = { projects: 'Projects', items: 'Deliverables', crew: 'Team', retainers: 'Retainers', expenses: 'Expenses', docs: 'Documents', settings: 'Settings' };
 // Columns stored as plain text so Sheets never turns them into numbers or dates.
 const TEXT_COLS = ['id', 'projectId', 'code', 'no', 'data', 'phone', 'date', 'time', 'due', 'created', 'updated', 'value',
-                   'paidOn', 'start', 'renewal', 'nextReport', 'paidMonths'];
+                   'paidOn', 'start', 'renewal', 'nextReport', 'paidMonths', 'discount'];
 const MAX_FAILS = 5, LOCK_SECONDS = 15 * 60;
 const CAL_NAME = 'Freelance', CAL_TZ = 'Asia/Dubai', SHOOT_HOURS = 3;
 
@@ -218,7 +218,7 @@ function syncCalendar_(ids) {
       if (known) sh.getRange(i + 2, evCol + 1).setValue('');
       return;
     }
-    const title = (p.status === 'Inquiry' ? '(Inquiry) ' : '') + (p.title || p.client) +
+    const title = (p.status === 'Inquiry' ? '(Inquiry) ' : p.status === 'Quoted' ? '(Quote) ' : '') + (p.title || p.client) +
       (p.client && String(p.title).indexOf(p.client) === -1 ? ' · ' + p.client : '');
     const timed = /^\d{1,2}:\d{2}/.test(String(p.time || ''));
     const start = timed ? Utilities.parseDate(p.date + ' ' + String(p.time).slice(0, 5), CAL_TZ, 'yyyy-MM-dd HH:mm') : null;
@@ -235,13 +235,16 @@ function syncCalendar_(ids) {
 
 function description_(p) {
   const n = v => Number(v) || 0;
+  // A discount is "10%" or an amount; the event shows what the client actually pays.
+  const d = String(p.discount || '').trim(), off = Math.min(n(p.price), Math.round(/%$/.test(d) ? n(p.price) * n(d.slice(0, -1)) / 100 : n(d)));
+  const price = n(p.price) - off;
   const phone = String(p.phone || '').replace(/\D/g, '').replace(/^00/, '').replace(/^05(\d{8})$/, '9715$1');
   return [
     'Client: ' + (p.client || ''),
     p.phone ? 'Phone: ' + p.phone + (phone ? '  ·  WhatsApp: https://wa.me/' + phone : '') : '',
     [p.type, p.status].filter(String).join(' · '),
     String(p.marketing).toUpperCase() === 'TRUE' ? 'Free shoot for my page' :
-      (n(p.price) ? 'Price ' + n(p.price) + (n(p.paid) ? ' · received ' + n(p.paid) : '') + (n(p.price) > n(p.paid) ? ' · due ' + (n(p.price) - n(p.paid)) : '') : ''),
+      (price ? 'Price ' + price + (off ? ' (after ' + d + ' discount)' : '') + (n(p.paid) ? ' · received ' + n(p.paid) : '') + (price > n(p.paid) ? ' · due ' + (price - n(p.paid)) : '') : ''),
     p.notes ? '\n' + p.notes : '',
     '\n' + (p.code || '') + ' · managed by the Studio app. Change it there and this event follows.',
   ].filter(String).join('\n');
