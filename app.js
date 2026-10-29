@@ -1358,7 +1358,7 @@ function openProject(id, preset, tab, then) {
     const now = normP({ ...p, price: val('price'), discount: val('discount'), paid: val('paid'), status: $('#f-status').value, marketing: $('#f-marketing').checked });
     const price = net(now), list = now.price, off = list - price, paid = now.paid, ex = num(val('expenses')) + crew.reduce((s, c) => s + num(c.fee), 0) + linkedCost(p.id);
     const [pay, payCls] = payState(now), bal = balance(now);
-    $('#pSub').innerHTML = `<span class="tag ${STATUS_TAG[now.status]}">${now.status}</span><span class="tag ${payCls}">${pay}</span>`;
+    $('#pSub').innerHTML = `<span class="tag ${STATUS_TAG[now.status]}">${now.status}</span>${booked(now) || now.marketing ? `<span class="tag ${payCls}">${pay}</span>` : ''}`;
     const lx = expensesOf(p.id);
     $('#moneySum').innerHTML = `${off ? `<div><small>Client pays</small><b>${money(price)}</b><small>${discLabel(now.discount)} off ${money(list)}</small></div>` : ''}<div><small>Balance</small><b style="color:${price - paid > 0 ? 'var(--bad)' : 'var(--ok)'}">${money(Math.max(0, price - paid))}</b></div><div><small>Profit${crew.length || lx.length ? ' after costs' : ''}</small><b>${money(price - ex)}</b></div><div><small>Margin</small><b>${price ? Math.round((price - ex) / price * 100) : 0}%</b></div>`;
     if (isNew) return;
