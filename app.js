@@ -1493,7 +1493,7 @@ function openQuickAdd(date) {
   const m = $('#modal');
   m.innerHTML = `<form class="modal-card" id="qForm" autocomplete="off">
     <div class="ph" style="margin:0"><h2 id="modalTitle">New booking</h2><button type="button" class="x" data-close aria-label="Close">✕</button></div>
-    <div class="seg kind" role="group" aria-label="What is it">${[['Booked', 'Booking'], ['Quoted', 'Quotation'], ['Inquiry', 'Inquiry']].map(([v, l], i) => `<button type="button" data-kind="${v}" aria-pressed="${!i}">${l}</button>`).join('')}</div>
+    <div class="seg kind" role="group" aria-label="What is it">${[['Booked', 'Booking'], ['Quoted', 'Quotation']].map(([v, l], i) => `<button type="button" data-kind="${v}" aria-pressed="${!i}">${l}</button>`).join('')}</div>
     <p class="fine" id="q-kindTxt"></p>
     <div class="grid2">
       <label class="field"><span>Client</span><input id="q-client" list="dl-q" required placeholder="Name"></label>
@@ -1513,7 +1513,7 @@ function openQuickAdd(date) {
   setTimeout(() => $('#q-client')?.focus(), 50);
   // A quotation isn't a booking yet: it is saved, then the quotation window opens to send it.
   let kind = 'Booked';
-  const KIND = { Booked: ['Add booking', 'A confirmed booking.'], Quoted: ['Next: quotation', "Saved as a quote, not a booking. If the client says yes, open it and press “Client accepted”."], Inquiry: ['Add inquiry', 'Someone asked; nothing sent yet.'] };
+  const KIND = { Booked: ['Add booking', 'A confirmed booking.'], Quoted: ['Next: quotation', "Saved as a quote, not a booking. If the client says yes, open it and press “Client accepted”."] };
   const drawKind = () => { $$('[data-kind]', m).forEach(b => b.setAttribute('aria-pressed', b.dataset.kind === kind)); $('#qGo').textContent = KIND[kind][0]; $('#q-kindTxt').textContent = KIND[kind][1]; };
   $$('[data-kind]', m).forEach(b => { b.onclick = () => { kind = b.dataset.kind; drawKind(); }; });
   drawKind();
