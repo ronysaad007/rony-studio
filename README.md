@@ -35,3 +35,22 @@ The Sheet stays private. The web app only answers requests that carry the passco
 | `index.html`, `styles.css`, `app.js` | The app |
 | `apps-script/Code.gs` | Google Sheet backend (paste into Apps Script) |
 | `icon.svg` | App icon |
+
+## Another studio on the same app (Alaa Shoot)
+
+`alaa/` is a second studio that runs this same app with its own name, Google Sheet and passcode:
+**https://ronysaad007.github.io/rony-studio/alaa/**. Every improvement to the app reaches both.
+Its data never mixes with the main studio's, even on the same phone (separate saved data and offline cache).
+
+Set up for Alaa (once, about 10 minutes, on a computer):
+1. Create a new Google Sheet in Alaa's Google account (e.g. "Alaa Shoot Data").
+2. **Extensions → Apps Script**, paste `apps-script/Code.gs`, Save.
+3. Choose `setup` and press **Run**, approve access. The Execution log shows the passcode.
+4. **Deploy → New deployment → Web app**: Execute as *Me*, access *Anyone*. Copy the `/exec` link.
+5. Open the Alaa link above, paste the `/exec` link and the passcode.
+6. Optional: put that `/exec` link in `alaa/config.js` (`sheetUrl`) so other devices only ask for the passcode.
+
+Alaa's colours (gold on black) are in `alaa/theme.css`, and his gold icon in `alaa/icon.svg` and `alaa/icons/`.
+
+To add another studio, copy `alaa/` to a new folder, change `id`, `title` and `defaults` in its `config.js`,
+the colours in `theme.css`, the `name`/`id` in its `manifest.webmanifest`, and `self.APP` in its `sw.js`.
