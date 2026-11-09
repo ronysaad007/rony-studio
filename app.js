@@ -69,6 +69,7 @@ const DEFAULTS = {
   businessName: 'Rony Saad',
   tagline: 'Photography / Film / AI / Creative Marketing',
   email: '', phone: '', address: 'Dubai, United Arab Emirates', website: 'ronysaad.com', payInfo: '',
+  trn: '',
   invoiceNote: 'Thank you for trusting us with your story.',
   quoteNote: 'Your date is confirmed once the deposit is received. Thank you for considering us for your story.',
   quoteDays: '14', quoteDeposit: '50',
@@ -957,6 +958,19 @@ function openExpense(id, preset, after) {
 // Clients come straight from projects: anyone you add a booking for gets a profile automatically.
 // The same person is matched by phone number first, then by name.
 const clientKey = p => waNumber(p.phone) || p.client.trim().toLowerCase();
+// A client's TRN and billing address, for invoices. Kept in Settings as client:<key> so the Sheet needs no new columns.
+function clientInfo(p) {
+  const r = db.settings.find(x => x.id === 'client:' + clientKey(p)) || db.settings.find(x => x.id === 'client:' + p.client.trim().toLowerCase());
+  try { return r ? JSON.parse(r.value) : {}; } catch (e) { return {}; }
+}
+function saveClientInfo(p, info) {
+  const key = clientKey(p); if (!key) return;
+  const old = clientInfo(p), next = { trn: String(info.trn || '').trim(), address: String(info.address || '').trim() };
+  if ((old.trn || '') === next.trn && (old.address || '') === next.address) return;
+  const row = { id: 'client:' + key, value: JSON.stringify(next) };
+  const i = db.settings.findIndex(x => x.id === row.id); if (i === -1) db.settings.push(row); else db.settings[i] = row;
+  saveLocal(); push({ action: 'upsert', table: 'settings', rows: [row] });
+}
 function clientMap() {
   const map = new Map();
   [...db.projects].sort((a, b) => dayOf(a).localeCompare(dayOf(b))).forEach(p => {
@@ -1011,6 +1025,8 @@ function openClient(key) {
         <dt>Email</dt><dd>${c.email ? `<a href="mailto:${esc(c.email)}">${esc(c.email)}</a>` : '—'}</dd>
         <dt>Instagram</dt><dd>${ig ? `<a href="https://instagram.com/${esc(ig)}" target="_blank" rel="noopener">@${esc(ig)}</a>` : '—'}</dd>
         <dt>Found you through</dt><dd>${c.sources.size ? [...c.sources].map(esc).join(', ') : '—'}</dd>
+        <dt>TRN</dt><dd>${esc(clientInfo(c.projects[c.projects.length - 1]).trn || '—')}</dd>
+        <dt>Address</dt><dd style="white-space:pre-line">${esc(clientInfo(c.projects[c.projects.length - 1]).address || '—')}</dd>
       </dl>
       <div class="wa-menu">${wa ? `<a class="btn sm wa" href="https://wa.me/${wa}" target="_blank" rel="noopener">WhatsApp</a>` : ''}<button type="button" class="btn sm" data-client-new="${esc(c.key)}">+ New booking for ${esc(c.name.split(' ')[0])}</button></div>
     </section>
@@ -1213,7 +1229,7 @@ function renderSettings() {
       ${f('businessName', 'Business name')}${f('tagline', 'Tagline')}
       <div class="grid2">${f('email', 'Email', 'email')}${f('phone', 'Phone', 'tel')}</div>
       <div class="grid2">${f('address', 'Address')}${f('website', 'Website')}</div>
-      <div class="grid2">${f('currency', 'Currency')}</div>
+      <div class="grid2">${f('currency', 'Currency')}${f('trn', 'Your TRN (optional)')}</div>
       <label class="field"><span>Payment details (bank / IBAN)</span><textarea id="s-payInfo">${esc(setting('payInfo'))}</textarea></label>
       <label class="field"><span>Note at the bottom of invoices</span><textarea id="s-invoiceNote">${esc(setting('invoiceNote'))}</textarea></label>
       <div class="grid2">${f('quoteDays', 'Quotations valid for (days)', 'number')}${f('quoteDeposit', 'Deposit to confirm (%)', 'number')}</div>
@@ -1288,10 +1304,12 @@ function openProject(id, preset, tab, then) {
     <section class="dr-sec" data-pt="overview" data-new><h3>Client ${isNew || !p.client ? '' : `<button type="button" class="linkbtn" data-client-open="${esc(clientKey(p))}">Profile ›</button>`}</h3>
       <div class="grid2"><label class="field"><span>Name</span><input id="f-client" list="dl-clients" value="${esc(p.client)}" required></label>
         <label class="field"><span>Phone / WhatsApp</span><input id="f-phone" type="tel" value="${esc(p.phone)}" placeholder="+971 5x xxx xxxx"></label></div>
-      <details class="more-f"><summary>Instagram, email, found you through</summary>
+      <details class="more-f" ${clientInfo(p).trn || clientInfo(p).address ? 'open' : ''}><summary>Instagram, email, TRN, address, found you through</summary>
         <div class="grid2"><label class="field"><span>Instagram</span><input id="f-instagram" value="${esc(p.instagram)}" placeholder="@handle"></label>
           <label class="field"><span>Email</span><input id="f-email" type="email" value="${esc(p.email)}"></label></div>
-        <label class="field"><span>Found you through</span><select id="f-source"><option value="">—</option>${opt(list('sources'), p.source)}</select></label></details>
+        <div class="grid2"><label class="field"><span>Client TRN (for invoices)</span><input id="f-trn" value="${esc(clientInfo(p).trn || '')}" inputmode="numeric" placeholder="100xxxxxxxxxxx3"></label>
+          <label class="field"><span>Found you through</span><select id="f-source"><option value="">—</option>${opt(list('sources'), p.source)}</select></label></div>
+        <label class="field"><span>Client address (for invoices)</span><textarea id="f-caddr" rows="2" placeholder="Company, street, city">${esc(clientInfo(p).address || '')}</textarea></label></details>
     </section>
     <section class="dr-sec" data-pt="overview" data-new><h3>Shoot</h3>
       <label class="field"><span>Project name</span><input id="f-title" value="${esc(p.title)}" placeholder="e.g. Wedding – Sara & Karim"></label>
@@ -1419,6 +1437,7 @@ function openProject(id, preset, tab, then) {
     const its = items.filter(i => i.title.trim()).map(i => normI({ ...i, projectId: out.id, title: i.title.trim(), notes: String(i.notes || '').trim() }));
     const team = crew.filter(c => c.name.trim() || num(c.fee)).map(c => normC({ ...c, projectId: out.id, name: c.name.trim() }));
     saveProject(out, its, team);
+    saveClientInfo(out, { trn: val('trn'), address: $('#f-caddr').value });
     if (close && isNew && out.status === 'Quoted') { closeLayers(); render(); openProject(out.id, null, 'docs', 'quote'); }
     else if (close) { closeLayers(); render(); toast(isNew ? (out.status === 'Inquiry' ? 'Inquiry added' : 'Booking added') : 'Saved'); } else { Object.assign(p, out); ui.keepScroll = true; render(); }
     return true;
@@ -1633,7 +1652,7 @@ function docSnapshot(p, kind, dep) {
   const quote = kind === 'quote';
   const days = Math.max(1, num(setting('quoteDays')) || 14);
   return {
-    kind, code: p.code, client: p.client, phone: p.phone, email: p.email,
+    kind, code: p.code, client: p.client, phone: p.phone, email: p.email, trn: clientInfo(p).trn || '', address: clientInfo(p).address || '',
     title: p.title, type: p.type, location: p.location, date: p.date, time: p.time,
     items: itemsOf(p.id).map(i => ({ title: i.title || i.type, type: i.type, qty: i.qty })),
     price: net(p), paid: p.paid, balance: balance(p),
@@ -1642,7 +1661,7 @@ function docSnapshot(p, kind, dep) {
     valid: quote ? ymd(new Date(Date.now() + days * 864e5)) : '',
     ...(quote && dep ? { deposit: dep.amt, depDue: dep.due } : {}),
     payInfo: setting('payInfo'), note: setting(quote ? 'quoteNote' : 'invoiceNote'),
-    biz: { name: setting('businessName'), tagline: setting('tagline'), address: setting('address'), phone: setting('phone'), email: setting('email'), website: setting('website'), currency: setting('currency') },
+    biz: { name: setting('businessName'), tagline: setting('tagline'), address: setting('address'), phone: setting('phone'), email: setting('email'), website: setting('website'), currency: setting('currency'), trn: setting('trn') },
   };
 }
 function docHtml(s, d) {
@@ -1665,8 +1684,8 @@ function docHtml(s, d) {
   <h1 class="doc-title">${quote ? 'Quote' : 'Invoice'}<span>.</span></h1>
   <div class="doc-ids"><div><span>No.</span><b>${esc(d.no)}</b></div><div><span>Issued</span><b>${docDate(d.date)}</b></div>${quote && s.valid ? `<div><span>Valid until</span><b>${docDate(s.valid)}</b></div>` : ''}${s.date ? `<div><span>Shoot date</span><b>${docDate(s.date)}${s.time ? ' · ' + esc(s.time) : ''}</b></div>` : ''}</div>
   <div class="doc-meta">
-    <div class="doc-box"><span class="doc-k">${quote ? 'Prepared for' : 'Billed to'}</span><b>${esc(s.client)}</b>${s.phone ? `<p>${esc(s.phone)}</p>` : ''}${s.email ? `<p>${esc(s.email)}</p>` : ''}</div>
-    <div class="doc-box"><span class="doc-k">From</span><b>${esc(b.name)}</b>${[b.address, b.phone, b.email].filter(Boolean).map(v => `<p>${esc(v)}</p>`).join('')}</div>
+    <div class="doc-box"><span class="doc-k">${quote ? 'Prepared for' : 'Billed to'}</span><b>${esc(s.client)}</b>${s.address ? `<p>${esc(s.address)}</p>` : ''}${s.phone ? `<p>${esc(s.phone)}</p>` : ''}${s.email ? `<p>${esc(s.email)}</p>` : ''}${s.trn ? `<p>TRN ${esc(s.trn)}</p>` : ''}</div>
+    <div class="doc-box"><span class="doc-k">From</span><b>${esc(b.name)}</b>${[b.address, b.phone, b.email, b.trn && 'TRN ' + b.trn].filter(Boolean).map(v => `<p>${esc(v)}</p>`).join('')}</div>
   </div>
   <section class="doc-project"><span class="doc-k">Project</span><h2>${esc(s.title)}</h2><p>${[s.type, s.location].filter(Boolean).map(esc).join(' · ')}</p></section>
   <table class="doc-table"><thead><tr><th></th><th>${quote ? 'What you get' : 'Delivered'}</th><th class="n">Qty</th></tr></thead><tbody>${rows}</tbody></table>
