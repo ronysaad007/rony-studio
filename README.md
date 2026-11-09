@@ -50,5 +50,7 @@ Set up for Alaa (once, about 10 minutes, on a computer):
 5. Open the Alaa link above, paste the `/exec` link and the passcode.
 6. Optional: put that `/exec` link in `alaa/config.js` (`sheetUrl`) so other devices only ask for the passcode.
 
+Alaa's colours (gold on black) are in `alaa/theme.css`, and his gold icon in `alaa/icon.svg` and `alaa/icons/`.
+
 To add another studio, copy `alaa/` to a new folder, change `id`, `title` and `defaults` in its `config.js`,
-the `name`/`id` in its `manifest.webmanifest`, and `self.APP` in its `sw.js`.
+the colours in `theme.css`, the `name`/`id` in its `manifest.webmanifest`, and `self.APP` in its `sw.js`.

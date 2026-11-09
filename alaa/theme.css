@@ -1,0 +1,8 @@
+/* Alaa Shoot: gold on black instead of orange. Only colours change; the layout is the shared styles.css. */
+:root{
+  --accent:#c9a227; --accent2:#e2c46b; --accent-soft:#c9a2271f; --on-accent:#141004;
+  --accent-hover:#d8b440; --accent-line:#c9a22780; --accent-glow:#c9a22740; --accent-glow2:#c9a22755; --accent-ring:#d4b04a45; --accent-faint:#c9a22713;
+  --tint:#241d0a; --glow-rgb:201,162,39;
+  /* warning leans orange so it never blends with the gold */
+  --warn:#f2994a; --warn-soft:#f2994a1f;
+}

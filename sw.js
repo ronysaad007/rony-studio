@@ -4,7 +4,7 @@
 const APP = self.APP || 'studio';
 const CACHE = APP + '-v6';
 const UP = self.APP ? '../' : '';
-const SHELL = ['./', 'index.html', 'manifest.webmanifest', UP + 'app.js', UP + 'styles.css', UP + 'icons/icon-192.png', UP + 'icons/icon-512.png'].concat(self.APP ? ['config.js'] : []);
+const SHELL = ['./', 'index.html', 'manifest.webmanifest', UP + 'app.js', UP + 'styles.css', UP + 'icons/icon-192.png', UP + 'icons/icon-512.png'].concat(self.APP ? ['config.js'] : [], self.EXTRA || []);
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
