@@ -43,13 +43,17 @@ const ICONS = {
 const icon = name => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>`;
 
 // ───────────────────────────── state ─────────────────────────────
-const CFG_KEY = 'rs.cfg', CACHE_KEY = 'rs.cache', QUEUE_KEY = 'rs.queue';
+// One codebase, several studios: a studio's folder (e.g. alaa/) sets window.STUDIO in its config.js before
+// loading this file. Each studio keeps its own Sheet, passcode and saved data on the device.
+const STUDIO = window.STUDIO || {};
+const APP = STUDIO.id || 'rs', MARK = STUDIO.mark ?? '®';
+const CFG_KEY = APP + '.cfg', CACHE_KEY = APP + '.cache', QUEUE_KEY = APP + '.queue';
 // Rony's Google Sheet web app. New devices only need the passcode; the Sheet itself stays private.
 const SHEET_URL = 'https://script.google.com/macros/s/AKfycbze7PdIwVZj2jXXsNYgNBiAzTG5eJHSNkXAcVRaHPdACSz3jtehz6k-7O-IY_pQc5iI/exec';
 let cfg = store.get(CFG_KEY, null);
 let db = store.get(CACHE_KEY, { projects: [], items: [], settings: [] });
 let queue = store.get(QUEUE_KEY, []);
-let lastSync = store.get('rs.lastSync', null);
+let lastSync = store.get(APP + '.lastSync', null);
 const ui = { view: 'today', mtab: 'report', filter: 'active', dfilter: 'soon', dShowDone: false, q: '', client: '', calMonth: null, calSel: null, period: 'year', countdown: null };
 
 const STATUSES = ['Inquiry', 'Quoted', 'Booked', 'Shot', 'Editing', 'Delivered', 'Cancelled'];
@@ -74,8 +78,9 @@ const DEFAULTS = {
   quoteNote: 'Your date is confirmed once the deposit is received. Thank you for considering us for your story.',
   quoteDays: '14', quoteDeposit: '50',
   postDays: '7', deliverDays: '14',
+  ...(STUDIO.defaults || {}),
 };
-const canDiscount = () => store.get('rs.disc', false);
+const canDiscount = () => store.get(APP + '.disc', false);
 const setting = k => { const r = db.settings.find(s => s.id === k); return r && r.value !== '' ? String(r.value) : DEFAULTS[k]; };
 const list = k => setting(k).split('\n').map(s => s.trim()).filter(Boolean);
 const money = v => `${setting('currency')} ${Math.round(num(v)).toLocaleString('en-US')}`;
@@ -247,8 +252,8 @@ async function pull(silent) {
       docs: (j.docs || []).map(normD),
       settings: (j.settings || []).map(s => ({ id: String(s.id), value: String(s.value ?? '') })),
     };
-    lastSync = Date.now(); store.set('rs.lastSync', lastSync);
-    store.set('rs.disc', (j.projects || []).some(r => 'discount' in r));
+    lastSync = Date.now(); store.set(APP + '.lastSync', lastSync);
+    store.set(APP + '.disc', (j.projects || []).some(r => 'discount' in r));
     saveLocal(); setSync('ok', 'Synced'); ui.keepScroll = true; render();
   } catch (e) {
     setSync('off', 'Offline');
@@ -1668,7 +1673,7 @@ function docHtml(s, d) {
   const quote = s.kind === 'quote', b = s.biz, year = d.date.slice(0, 4);
   const dep = s.deposit != null ? num(s.deposit) : num(s.price) * num(s.pct) / 100;
   const cash = v => `${esc(b.currency)} ${Math.round(num(v)).toLocaleString('en-US')}`;
-  const logo = `<span class="doc-logo">${esc(b.name.toUpperCase()).replace(' ', '<span>.</span>')}<em>®</em></span>`;
+  const logo = `<span class="doc-logo">${brandMark(b.name)}</span>`;
   const line = (label, value, cls = '') => `<div class="doc-line ${cls}"><span>${label}</span><b>${value}</b></div>`;
   const items = s.items.length ? s.items : [{ title: s.title, type: s.type, qty: 1 }];
   const rows = items.map((i, n) => `<tr><td class="doc-no">${String(n + 1).padStart(2, '0')}</td><td><b>${esc(i.title)}</b>${i.type && i.type !== i.title ? `<small>${esc(i.type)}</small>` : ''}</td><td class="n">${i.qty}</td></tr>`).join('');
@@ -1901,8 +1906,15 @@ const VIEWS = { today: renderToday, projects: renderProjects, clients: renderCli
 // Old addresses (the installed app may still open them) land on their new home.
 const MOVED = { home: 'today', deliver: 'today', calendar: 'today', docs: 'money/docs', team: 'money/team' };
 const JUMP = { deliver: 't-deliver', calendar: 't-cal' };
+// The wordmark is the business name: "Rony Saad" → RONY.SAAD®.
+const brandMark = name => `${esc(String(name).toUpperCase()).replace(' ', '<span>.</span>')}${MARK ? `<em>${esc(MARK)}</em>` : ''}`;
+function drawBrand() {
+  $$('.wordmark').forEach(w => { w.innerHTML = brandMark(setting('businessName')); });
+  document.title = STUDIO.title || `${setting('businessName')} Studio`;
+}
 function render() {
   if (!cfg) return;
+  drawBrand();
   clearInterval(ui.countdown);
   const y = window.scrollY;
   (VIEWS[ui.view] || renderToday)();
@@ -1919,7 +1931,7 @@ function route() {
   const [v, sub] = h.split('/');
   ui.view = VIEWS[v] ? v : 'today';
   if (ui.view === 'money') ui.mtab = MTABS[sub] ? sub : 'report';
-  if (ui.view === 'projects') { ui.pview = ['list', 'board'].includes(sub) ? sub : store.get('rs.pview', 'list'); store.set('rs.pview', ui.pview); }
+  if (ui.view === 'projects') { ui.pview = ['list', 'board'].includes(sub) ? sub : store.get(APP + '.pview', 'list'); store.set(APP + '.pview', ui.pview); }
   render();
 }
 function go(view) { if (location.hash.slice(1) === view) render(); else location.hash = view; }
@@ -2030,7 +2042,9 @@ $$('[data-ic]').forEach(i => { i.outerHTML = icon(i.dataset.ic); });
 $('#setLink').innerHTML = icon('gear');
 $('#moreBtn').innerHTML = icon('more');
 $('#searchBtn').innerHTML = icon('search');
-if (SHEET_URL) { $('#cUrl').value = SHEET_URL; $('#cUrlField').style.display = 'none'; }
+const SHEET = STUDIO.sheetUrl ?? SHEET_URL;
+if (SHEET) { $('#cUrl').value = SHEET; $('#cUrlField').style.display = 'none'; }
+drawBrand();
 // Anywhere but the live address is a test copy: say so next to the logo.
 if (!location.hostname.endsWith('github.io')) document.body.classList.add('preview');
 
