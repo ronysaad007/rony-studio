@@ -2,7 +2,7 @@
    Always asks the network first, so a new version shows up the next time the app opens.
    A studio folder (e.g. alaa/) has its own sw.js that sets self.APP and loads this file. */
 const APP = self.APP || 'studio';
-const CACHE = APP + '-v6';
+const CACHE = APP + '-v7';
 const UP = self.APP ? '../' : '';
 const SHELL = ['./', 'index.html', 'manifest.webmanifest', UP + 'app.js', UP + 'styles.css', UP + 'icons/icon-192.png', UP + 'icons/icon-512.png'].concat(self.APP ? ['config.js'] : [], self.EXTRA || []);
 

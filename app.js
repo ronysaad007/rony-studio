@@ -81,6 +81,10 @@ const DEFAULTS = {
   ...(STUDIO.defaults || {}),
 };
 const canDiscount = () => store.get(APP + '.disc', false);
+// Columns the Sheet has: new ones (like "hours") only save once the Apps Script is updated.
+const hasCol = c => (store.get(APP + '.cols', []) || []).includes(c);
+const fmtHours = h => (num(h) ? `${num(h)} hour${num(h) === 1 ? '' : 's'}` : '');
+const timeAndHours = p => [p.time && fmtTime(p.time), p.hours && fmtHours(p.hours)].filter(Boolean).join(' · ');
 const setting = k => { const r = db.settings.find(s => s.id === k); return r && r.value !== '' ? String(r.value) : DEFAULTS[k]; };
 const list = k => setting(k).split('\n').map(s => s.trim()).filter(Boolean);
 const money = v => `${setting('currency')} ${Math.round(num(v)).toLocaleString('en-US')}`;
@@ -89,7 +93,7 @@ function normP(p) {
   return {
     id: String(p.id), code: String(p.code || ''), client: String(p.client || ''), phone: String(p.phone || ''),
     email: String(p.email || ''), instagram: String(p.instagram || ''), title: String(p.title || ''), type: String(p.type || ''),
-    date: String(p.date || ''), time: String(p.time || ''), location: String(p.location || ''),
+    date: String(p.date || ''), time: String(p.time || ''), hours: Math.max(0, num(p.hours)), location: String(p.location || ''),
     price: num(p.price), discount: normDisc(p.discount), paid: num(p.paid), expenses: num(p.expenses),
     status: STATUSES.includes(p.status) ? p.status : 'Booked', marketing: bool(p.marketing), posted: bool(p.posted),
     source: String(p.source || ''), drive: String(p.drive || ''), notes: String(p.notes || ''),
@@ -254,6 +258,7 @@ async function pull(silent) {
     };
     lastSync = Date.now(); store.set(APP + '.lastSync', lastSync);
     store.set(APP + '.disc', (j.projects || []).some(r => 'discount' in r));
+    store.set(APP + '.cols', [...new Set((j.projects || []).flatMap(r => Object.keys(r)))]);
     saveLocal(); setSync('ok', 'Synced'); ui.keepScroll = true; render();
   } catch (e) {
     setSync('off', 'Offline');
@@ -316,7 +321,7 @@ function waNumber(phone) {
 }
 function waText(p, kind) {
   const first = p.client.split(/\s+/)[0] || 'there';
-  const when = p.date ? `${fmtDate(p.date)}${p.time ? ' at ' + fmtTime(p.time) : ''}` : 'the date we agreed';
+  const when = p.date ? `${fmtDate(p.date)}${p.time ? ' at ' + fmtTime(p.time) : ''}${p.hours ? ` (${fmtHours(p.hours)})` : ''}` : 'the date we agreed';
   const name = setting('businessName');
   if (kind === 'confirm') return `Hi ${first}, this is ${name}. Your ${p.type || 'shoot'} is confirmed for ${when}${p.location && !/^https?:/.test(p.location) ? ' at ' + p.location : ''}.${p.price ? ` Total: ${money(net(p))}${p.paid ? `, received ${money(p.paid)}` : ''}.` : ''} Looking forward to it!`;
   if (kind === 'remind') return `Hi ${first}, a quick reminder about your ${p.type || 'shoot'} on ${when}. See you there! — ${name}`;
@@ -422,7 +427,7 @@ function projectRow(p) {
   return `<div class="row ${p.status === 'Cancelled' ? 'cancelled' : ''}" data-open="${p.id}" role="button" tabindex="0">
     ${dateBlock(p)}
     <div class="main"><strong>${esc(p.title || p.client)}</strong>
-      <small>${esc(p.client)}${p.type ? ' · ' + esc(p.type) : ''}${p.time ? ' · ' + fmtTime(p.time) : ''}${its.length ? ` · ${done}/${its.length} delivered` : ''}${left ? ` · left: ${esc(left)}` : ''}</small></div>
+      <small>${esc(p.client)}${p.type ? ' · ' + esc(p.type) : ''}${timeAndHours(p) ? ' · ' + timeAndHours(p) : ''}${its.length ? ` · ${done}/${its.length} delivered` : ''}${left ? ` · left: ${esc(left)}` : ''}</small></div>
     ${steps(p)}
     <div class="money"><b>${p.marketing ? 'Free' : money(net(p))}</b><span class="tag ${payCls}">${pay}${!p.marketing && balance(p) && p.paid ? ' · ' + money(balance(p)) + ' left' : ''}</span></div>
   </div>`;
@@ -473,7 +478,7 @@ function renderToday() {
     ${rest.length ? `<section class="panel"><div class="ph"><h2>Also needs you</h2><small>${rest.length} item${rest.length === 1 ? '' : 's'}</small></div>${renderAlerts(rest)}</section>` : ''}`;
   const main = `<section class="panel" id="t-shoots"><div class="ph"><h2>Upcoming shoots</h2><button class="linkbtn" data-jump="t-cal">Calendar ↓</button></div>
         ${next ? `<div class="hero"><div><div class="label">Next · ${esc(next.code)}</div><h3>${esc(next.title)}</h3>
-          <div class="meta"><span>${fmtDate(next.date)}${next.time ? ' · ' + fmtTime(next.time) : ''}</span><span>${esc(next.client)}</span>${next.location ? `<span>${loc(next)}</span>` : ''}</div>
+          <div class="meta"><span>${fmtDate(next.date)}${timeAndHours(next) ? ' · ' + timeAndHours(next) : ''}</span><span>${esc(next.client)}</span>${next.location ? `<span>${loc(next)}</span>` : ''}</div>
           <div class="acts">${waBtn(next, 'remind', 'Send reminder')}<button class="btn sm" data-open="${next.id}">Open</button></div></div>
           <div class="cd" id="cd" data-at="${next.date}T${next.time || '00:00'}"></div></div>` : '<div class="empty"><b>Nothing booked ahead</b><button class="btn primary sm" data-add style="margin-top:10px">+ New booking</button></div>'}
         ${upcoming.length > 1 ? `<div class="mini">${upcoming.slice(1, 8).map(p => `<div class="mini-it" data-open="${p.id}" role="button" tabindex="0"><div><b>${esc(p.title)}</b><small>${esc(p.client)}${p.location && !/^https?:/.test(p.location) ? ' · ' + esc(p.location) : ''}</small></div><div class="r">${fmtDate(p.date)}<small>${p.date === t ? 'Today' : 'in ' + daysBetween(t, p.date) + ' d'}${p.time ? ' · ' + fmtTime(p.time) : ''}</small></div></div>`).join('')}</div>` : ''}
@@ -582,7 +587,7 @@ function kcard(p) {
   const dep = ['Inquiry', 'Quoted', 'Booked'].includes(p.status) && !p.marketing ? depositOf(p) : null;
   return `<div class="kcard" draggable="true" data-open="${p.id}" data-id="${p.id}" role="button" tabindex="0">
     <b>${esc(p.title || p.client)}</b><small>${esc(p.client)}${p.type ? ' · ' + esc(p.type) : ''}</small>
-    <span class="kdate ${passed ? 'late' : ''}">${p.date ? fmtDate(p.date) : 'No date'}${p.time ? ' · ' + fmtTime(p.time) : ''}</span>
+    <span class="kdate ${passed ? 'late' : ''}">${p.date ? fmtDate(p.date) : 'No date'}${timeAndHours(p) ? ' · ' + timeAndHours(p) : ''}</span>
     <div class="ktags">${!booked(p) ? '' : `<span class="tag ${payCls}">${pay}</span>`}${its.length && ['Shot', 'Editing', 'Delivered'].includes(p.status) ? `<span class="tag ${done === its.length ? 't-ok' : 't-mute'}">${done}/${its.length} delivered</span>` : ''}${late ? `<span class="tag t-bad">${late} late</span>` : ''}${passed ? '<span class="tag t-warn">Date passed</span>' : ''}${dep && dep.left ? `<span class="tag ${dep.due && dep.due < t ? 't-bad' : 't-warn'}">Deposit ${dep.due && dep.due < t ? 'late' : 'due'}</span>` : ''}${p.marketing ? '<b>Free</b>' : p.price ? `<b>${money(net(p))}</b>` : ''}</div>
     ${nx ? `<button type="button" class="btn sm knext" data-status="${p.id}" data-to="${nx[0]}">${nx[1]} →</button>` : ''}</div>`;
 }
@@ -1226,8 +1231,8 @@ function renderSettings() {
   <div class="vhead"><div><p class="eyebrow">Studio setup</p><h1>Set<span class="o">tings</span></h1></div></div>
   <div class="set-grid">
     <section class="panel stack"><h2>Connection</h2>
-      <dl class="kv"><dt>Sheet link</dt><dd>${esc(cfg.url.replace(/(macros\/s\/.{6}).+(.{6}\/exec)/, '$1…$2'))}</dd><dt>Last sync</dt><dd>${lastSync ? new Date(lastSync).toLocaleString() : 'Never'}</dd><dt>Waiting to save</dt><dd>${queue.length}</dd><dt>Discounts</dt><dd>${canDiscount() ? 'Ready' : '<span class="warn-t">Update the Apps Script</span>'}</dd></dl>
-      ${canDiscount() ? '' : `<p class="fine">To save discounts, the Sheet needs one more column. In the Sheet: Extensions → Apps Script, replace the code with the new <a class="linkbtn" href="https://github.com/ronysaad007/rony-studio/blob/main/apps-script/Code.gs" target="_blank" rel="noopener">Code.gs</a>, Save, then Deploy → Manage deployments → ✏️ → Version: New version → Deploy. Then press Sync now.</p>`}
+      <dl class="kv"><dt>Sheet link</dt><dd>${esc(cfg.url.replace(/(macros\/s\/.{6}).+(.{6}\/exec)/, '$1…$2'))}</dd><dt>Last sync</dt><dd>${lastSync ? new Date(lastSync).toLocaleString() : 'Never'}</dd><dt>Waiting to save</dt><dd>${queue.length}</dd><dt>Discounts</dt><dd>${canDiscount() ? 'Ready' : '<span class="warn-t">Update the Apps Script</span>'}</dd><dt>Shoot length</dt><dd>${hasCol('hours') ? 'Ready' : '<span class="warn-t">Update the Apps Script</span>'}</dd></dl>
+      ${canDiscount() && hasCol('hours') ? '' : `<p class="fine">To save discounts and shoot lengths, the Sheet needs new columns. In the Sheet: Extensions → Apps Script, replace the code with the new <a class="linkbtn" href="https://github.com/ronysaad007/rony-studio/blob/main/apps-script/Code.gs" target="_blank" rel="noopener">Code.gs</a>, Save, then Deploy → Manage deployments → ✏️ → Version: New version → Deploy. Then press Sync now.</p>`}
       <div class="modal-acts" style="justify-content:flex-start"><button class="btn sm" id="sSync">Sync now</button><button class="btn sm danger" id="sOut">Disconnect this device</button></div>
       <p class="fine">Edit anything straight in the Google Sheet too. Press Sync to pull those changes in.</p></section>
     <section class="panel stack"><h2>Invoice & quotation details</h2>
@@ -1258,13 +1263,14 @@ function renderSettings() {
       <div class="modal-acts" style="justify-content:flex-start"><button class="btn sm" id="sCsv">Download CSV</button><button class="btn sm" id="sJson">Download backup</button></div></section>
   </div>
   <div class="modal-acts"><button class="btn primary" id="sSave">Save settings</button></div>`;
-  const readPkgs = () => $$('#pkgList .pkg').map(el => ({ id: el.dataset.id, name: $('[data-f=name]', el).value.trim(), type: $('[data-f=type]', el).value, price: num($('[data-f=price]', el).value), items: $('[data-f=items]', el).value.trim() }));
+  const readPkgs = () => $$('#pkgList .pkg').map(el => ({ id: el.dataset.id, name: $('[data-f=name]', el).value.trim(), type: $('[data-f=type]', el).value, price: num($('[data-f=price]', el).value), hours: num($('[data-f=hours]', el).value), items: $('[data-f=items]', el).value.trim() }));
   let pkgs = packages();
   const drawPkgs = () => {
     $('#pkgList').innerHTML = pkgs.map(k => `<div class="pkg" data-id="${esc(k.id)}">
       <div class="grid3"><label class="field"><span>Name</span><input data-f="name" value="${esc(k.name)}" placeholder="e.g. Wedding Gold"></label>
         <label class="field"><span>Shoot type</span><select data-f="type">${[...new Set([...list('types'), k.type].filter(Boolean))].map(t => `<option ${t === k.type ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></label>
         <label class="field"><span>Price (${esc(setting('currency'))})</span><input data-f="price" type="number" inputmode="decimal" min="0" value="${k.price || ''}"></label></div>
+      <label class="field"><span>How long (hours)</span><input data-f="hours" type="number" inputmode="decimal" min="0" step="0.5" value="${k.hours || ''}" placeholder="e.g. 8"></label>
       <label class="field"><span>What's included</span><textarea data-f="items" rows="4" placeholder="Photos&#10;2 Reel +7&#10;Full Video&#10;Album +30">${esc(k.items)}</textarea></label>
       <button type="button" class="linkbtn pkg-del" data-pkg-del="${esc(k.id)}">Remove package</button></div>`).join('') || '<p class="fine">No packages yet.</p>';
   };
@@ -1323,6 +1329,8 @@ function openProject(id, preset, tab, then) {
         <label class="field"><span>Status</span><select id="f-status">${opt(STATUSES, p.status)}</select></label>
         <label class="field"><span>Date</span><input id="f-date" type="date" value="${esc(p.date)}"></label>
         <label class="field"><span>Time</span><input id="f-time" type="time" value="${esc(p.time)}"></label></div>
+      <label class="field"><span>How long (hours)</span><input id="f-hours" type="number" inputmode="decimal" min="0" step="0.5" value="${p.hours || ''}" placeholder="e.g. 3" ${hasCol('hours') ? '' : 'disabled'}></label>
+      ${hasCol('hours') ? '' : '<p class="fine warn-t">To save the length, update the Apps Script once (see Settings → Connection).</p>'}
       <label class="field"><span>Location (address or Google Maps link)</span><input id="f-location" value="${esc(p.location)}"></label>
       <div class="grid2"><label class="check"><input type="checkbox" id="f-marketing" ${p.marketing ? 'checked' : ''}> Free shoot for my page</label>
         <label class="check"><input type="checkbox" id="f-posted" ${p.posted ? 'checked' : ''}> Posted on social</label></div>
@@ -1433,7 +1441,7 @@ function openProject(id, preset, tab, then) {
     const out = normP({
       ...p, client: val('client'), phone: val('phone'), instagram: val('instagram'), email: val('email'), source: $('#f-source').value,
       title: val('title') || `${$('#f-type').value} – ${val('client')}`, type: $('#f-type').value, status: $('#f-status').value,
-      date: val('date'), time: val('time'), location: val('location'), marketing: $('#f-marketing').checked, posted: $('#f-posted').checked,
+      date: val('date'), time: val('time'), hours: hasCol('hours') ? val('hours') : p.hours, location: val('location'), marketing: $('#f-marketing').checked, posted: $('#f-posted').checked,
       price: val('price'), discount: canDiscount() ? val('discount') : p.discount, paid: val('paid'), expenses: val('expenses'), drive: val('drive'), notes: $('#f-notes').value.trim(),
     });
     const k = fpkg();
@@ -1460,7 +1468,7 @@ function openProject(id, preset, tab, then) {
   // A package fills the type and price; on an existing project it also adds what's missing from its list.
   if ($('#f-pkg')) $('#f-pkg').onchange = () => {
     const k = fpkg(); if (!k) { drawTpl(); return; }
-    pick($('#f-type'), k.type); if (k.price) $('#f-price').value = k.price;
+    pick($('#f-type'), k.type); if (k.price) $('#f-price').value = k.price; if (k.hours && hasCol('hours')) $('#f-hours').value = k.hours;
     if (!isNew) {
       const have = new Set(items.map(i => (i.title || i.type).trim().toLowerCase()));
       const add = parseItems(k.items, val('date'), p.id).filter(i => !have.has(i.title.toLowerCase()));
@@ -1527,6 +1535,7 @@ function openQuickAdd(date) {
       <label class="field"><span>Price (${esc(setting('currency'))})</span><input id="q-price" type="number" inputmode="decimal" min="0" placeholder="0"></label>
       <label class="field"><span>Date</span><input id="q-date" type="date" value="${esc(date || '')}"></label>
       <label class="field"><span>Time</span><input id="q-time" type="time"></label>
+      ${hasCol('hours') ? '<label class="field"><span>How long (hours)</span><input id="q-hours" type="number" inputmode="decimal" min="0" step="0.5" placeholder="e.g. 3"></label>' : ''}
     </div>
     <label class="check"><input type="checkbox" id="q-free"> Free shoot for my page</label>
     <label class="check tpl-chk"><input type="checkbox" id="q-tpl" checked> <span id="q-tplTxt"></span></label>
@@ -1544,7 +1553,7 @@ function openQuickAdd(date) {
   const qpkg = () => $('#q-pkg') && pkgOf($('#q-pkg').value);
   const drawTpl = () => { const k = qpkg(), t = k ? pkgSummary(k) : tplSummary($('#q-type').value); $('#q-tplTxt').textContent = `${k ? 'Add what ' + k.name + ' includes' : 'Add the usual deliverables'}: ${t}`; $('.tpl-chk', m).hidden = !t; };
   drawTpl(); $('#q-type').addEventListener('change', drawTpl);
-  if ($('#q-pkg')) $('#q-pkg').onchange = () => { const k = qpkg(); if (k) { pick($('#q-type'), k.type); $('#q-price').value = k.price || ''; } drawTpl(); };
+  if ($('#q-pkg')) $('#q-pkg').onchange = () => { const k = qpkg(); if (k) { pick($('#q-type'), k.type); $('#q-price').value = k.price || ''; if ($('#q-hours')) $('#q-hours').value = k.hours || ''; } drawTpl(); };
   $('#q-client').addEventListener('change', e => {
     const prev = db.projects.find(p => p.client.toLowerCase() === e.target.value.trim().toLowerCase() && p.phone);
     if (prev && !$('#q-phone').value) $('#q-phone').value = prev.phone;
@@ -1554,7 +1563,7 @@ function openQuickAdd(date) {
     const prev = db.projects.find(p => p.client.toLowerCase() === client.toLowerCase());
     return {
       client, phone: $('#q-phone').value.trim(), type, title: client ? `${qpkg() ? qpkg().name : type} – ${client}` : '', price: $('#q-price').value, _pkg: qpkg() ? qpkg().id : '',
-      date: $('#q-date').value, time: $('#q-time').value, status: kind, marketing: $('#q-free').checked,
+      date: $('#q-date').value, time: $('#q-time').value, hours: $('#q-hours') ? $('#q-hours').value : '', status: kind, marketing: $('#q-free').checked,
       instagram: prev ? prev.instagram : '', email: prev ? prev.email : '', source: prev ? prev.source : '',
     };
   };
@@ -1658,7 +1667,7 @@ function docSnapshot(p, kind, dep) {
   const days = Math.max(1, num(setting('quoteDays')) || 14);
   return {
     kind, code: p.code, client: p.client, phone: p.phone, email: p.email, trn: clientInfo(p).trn || '', address: clientInfo(p).address || '',
-    title: p.title, type: p.type, location: p.location, date: p.date, time: p.time,
+    title: p.title, type: p.type, location: p.location, date: p.date, time: p.time, hours: p.hours,
     items: itemsOf(p.id).map(i => ({ title: i.title || i.type, type: i.type, qty: i.qty })),
     price: net(p), paid: p.paid, balance: balance(p),
     ...(discAmt(p.price, p.discount) ? { list: p.price, discount: normDisc(p.discount), off: discAmt(p.price, p.discount) } : {}),
@@ -1687,7 +1696,7 @@ function docHtml(s, d) {
   <header class="doc-top">${logo}<span class="doc-pill"><i></i>${docKind(s.kind)} / ${year}</span></header>
   <p class="doc-eyebrow">${esc(b.tagline)}</p>
   <h1 class="doc-title">${quote ? 'Quote' : 'Invoice'}<span>.</span></h1>
-  <div class="doc-ids"><div><span>No.</span><b>${esc(d.no)}</b></div><div><span>Issued</span><b>${docDate(d.date)}</b></div>${quote && s.valid ? `<div><span>Valid until</span><b>${docDate(s.valid)}</b></div>` : ''}${s.date ? `<div><span>Shoot date</span><b>${docDate(s.date)}${s.time ? ' · ' + esc(s.time) : ''}</b></div>` : ''}</div>
+  <div class="doc-ids"><div><span>No.</span><b>${esc(d.no)}</b></div><div><span>Issued</span><b>${docDate(d.date)}</b></div>${quote && s.valid ? `<div><span>Valid until</span><b>${docDate(s.valid)}</b></div>` : ''}${s.date ? `<div><span>Shoot date</span><b>${docDate(s.date)}${s.time ? ' · ' + esc(s.time) : ''}</b></div>` : ''}${num(s.hours) ? `<div><span>Coverage</span><b>${fmtHours(s.hours)}</b></div>` : ''}</div>
   <div class="doc-meta">
     <div class="doc-box"><span class="doc-k">${quote ? 'Prepared for' : 'Billed to'}</span><b>${esc(s.client)}</b>${s.address ? `<p>${esc(s.address)}</p>` : ''}${s.phone ? `<p>${esc(s.phone)}</p>` : ''}${s.email ? `<p>${esc(s.email)}</p>` : ''}${s.trn ? `<p>TRN ${esc(s.trn)}</p>` : ''}</div>
     <div class="doc-box"><span class="doc-k">From</span><b>${esc(b.name)}</b>${[b.address, b.phone, b.email, b.trn && 'TRN ' + b.trn].filter(Boolean).map(v => `<p>${esc(v)}</p>`).join('')}</div>

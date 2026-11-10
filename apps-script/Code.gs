@@ -18,7 +18,7 @@
 const TABLES = {
   projects: ['id', 'code', 'client', 'phone', 'email', 'instagram', 'title', 'type', 'date', 'time',
              'location', 'price', 'paid', 'expenses', 'status', 'marketing', 'posted', 'source',
-             'drive', 'notes', 'created', 'updated', 'calEvent', 'discount'],
+             'drive', 'notes', 'created', 'updated', 'calEvent', 'discount', 'hours'],
   items: ['id', 'projectId', 'title', 'status', 'due', 'notes', 'type', 'qty'],
   crew: ['id', 'projectId', 'name', 'role', 'fee', 'paidOn', 'notes'],
   retainers: ['id', 'client', 'brand', 'phone', 'instagram', 'platforms', 'fee', 'adBudget', 'start', 'renewal',
@@ -221,10 +221,11 @@ function syncCalendar_(ids) {
     const title = (p.status === 'Inquiry' ? '(Inquiry) ' : p.status === 'Quoted' ? '(Quote) ' : '') + (p.title || p.client) +
       (p.client && String(p.title).indexOf(p.client) === -1 ? ' · ' + p.client : '');
     const timed = /^\d{1,2}:\d{2}/.test(String(p.time || ''));
+    const hours = Number(p.hours) > 0 ? Number(p.hours) : SHOOT_HOURS; // the shoot's length, or 3 hours if not set
     const start = timed ? Utilities.parseDate(p.date + ' ' + String(p.time).slice(0, 5), CAL_TZ, 'yyyy-MM-dd HH:mm') : null;
     const day = Utilities.parseDate(String(p.date), Session.getScriptTimeZone(), 'yyyy-MM-dd');
-    if (!ev) ev = timed ? cal.createEvent(title, start, new Date(start.getTime() + SHOOT_HOURS * 36e5)) : cal.createAllDayEvent(title, day);
-    else if (timed) ev.setTime(start, new Date(start.getTime() + SHOOT_HOURS * 36e5));
+    if (!ev) ev = timed ? cal.createEvent(title, start, new Date(start.getTime() + hours * 36e5)) : cal.createAllDayEvent(title, day);
+    else if (timed) ev.setTime(start, new Date(start.getTime() + hours * 36e5));
     else ev.setAllDayDate(day);
     ev.setTitle(title);
     ev.setLocation(String(p.location || ''));
@@ -242,7 +243,7 @@ function description_(p) {
   return [
     'Client: ' + (p.client || ''),
     p.phone ? 'Phone: ' + p.phone + (phone ? '  ·  WhatsApp: https://wa.me/' + phone : '') : '',
-    [p.type, p.status].filter(String).join(' · '),
+    [p.type, p.status, n(p.hours) ? n(p.hours) + (n(p.hours) === 1 ? ' hour' : ' hours') : ''].filter(String).join(' · '),
     String(p.marketing).toUpperCase() === 'TRUE' ? 'Free shoot for my page' :
       (price ? 'Price ' + price + (off ? ' (after ' + d + ' discount)' : '') + (n(p.paid) ? ' · received ' + n(p.paid) : '') + (price > n(p.paid) ? ' · due ' + (price - n(p.paid)) : '') : ''),
     p.notes ? '\n' + p.notes : '',
