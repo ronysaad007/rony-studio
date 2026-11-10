@@ -80,9 +80,9 @@ const DEFAULTS = {
   postDays: '7', deliverDays: '14',
   ...(STUDIO.defaults || {}),
 };
-const canDiscount = () => store.get(APP + '.disc', false);
+const canDiscount = () => store.get(APP + '.disc', false) || store.get(APP + '.auto', false);
 // Columns the Sheet has: new ones (like "hours") only save once the Apps Script is updated.
-const hasCol = c => (store.get(APP + '.cols', []) || []).includes(c);
+const hasCol = c => store.get(APP + '.auto', false) || (store.get(APP + '.cols', []) || []).includes(c);
 const fmtHours = h => (num(h) ? `${num(h)} hour${num(h) === 1 ? '' : 's'}` : '');
 const timeAndHours = p => [p.time && fmtTime(p.time), p.hours && fmtHours(p.hours)].filter(Boolean).join(' · ');
 const setting = k => { const r = db.settings.find(s => s.id === k); return r && r.value !== '' ? String(r.value) : DEFAULTS[k]; };
@@ -259,6 +259,7 @@ async function pull(silent) {
     lastSync = Date.now(); store.set(APP + '.lastSync', lastSync);
     store.set(APP + '.disc', (j.projects || []).some(r => 'discount' in r));
     store.set(APP + '.cols', [...new Set((j.projects || []).flatMap(r => Object.keys(r)))]);
+    store.set(APP + '.auto', j.schema === 'auto');
     saveLocal(); setSync('ok', 'Synced'); ui.keepScroll = true; render();
   } catch (e) {
     setSync('off', 'Offline');
