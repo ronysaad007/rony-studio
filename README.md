@@ -38,8 +38,9 @@ The Sheet stays private. The web app only answers requests that carry the passco
 
 ## Another studio on the same app (Alaa Shoot)
 
-`alaa/` is a second studio that runs this same app with its own name, Google Sheet and passcode:
-**https://ronysaad007.github.io/rony-studio/alaa/**. Every improvement to the app reaches both.
+`alaa/` is a second studio with its own name, Google Sheet, passcode and colours:
+**https://ronysaad007.github.io/rony-studio/alaa/**. It is **frozen**: it runs its own copy of the app
+(`alaa/app.js`, `alaa/styles.css`, taken in November 2026), so changes to the main app don't reach it.
 Its data never mixes with the main studio's, even on the same phone (separate saved data and offline cache).
 
 Set up for Alaa (once, about 10 minutes, on a computer):

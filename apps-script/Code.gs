@@ -18,7 +18,7 @@
 const TABLES = {
   projects: ['id', 'code', 'client', 'phone', 'email', 'instagram', 'title', 'type', 'date', 'time',
              'location', 'price', 'paid', 'expenses', 'status', 'marketing', 'posted', 'source',
-             'drive', 'notes', 'created', 'updated', 'calEvent', 'discount'],
+             'drive', 'notes', 'created', 'updated', 'calEvent', 'discount', 'hours'],
   items: ['id', 'projectId', 'title', 'status', 'due', 'notes', 'type', 'qty'],
   crew: ['id', 'projectId', 'name', 'role', 'fee', 'paidOn', 'notes'],
   retainers: ['id', 'client', 'brand', 'phone', 'instagram', 'platforms', 'fee', 'adBudget', 'start', 'renewal',
@@ -66,7 +66,8 @@ function doPost(e) {
   try {
     switch (req.action) {
       case 'all':
-        return out_({ ok: true, projects: read_('projects'), items: read_('items'), crew: read_('crew'),
+        // schema 'auto' tells the app that new fields are saved without another script update.
+        return out_({ ok: true, schema: 'auto', projects: read_('projects'), items: read_('items'), crew: read_('crew'),
                       retainers: read_('retainers'), expenses: read_('expenses'), docs: read_('docs'), settings: read_('settings') });
       case 'upsert':
         upsert_(req.table, req.rows || []);
@@ -139,10 +140,24 @@ function read_(table) {
     .map(r => { const o = {}; cols.forEach((c, i) => { if (c) o[c] = cell_(r[i], c); }); return o; });
 }
 
+// A field the app sends that the sheet has no column for yet gets its own column, stored as text,
+// so new app features never need this script to be updated again.
+function ensureCols_(sh, rows) {
+  const cols = headers_(sh);
+  const seen = {};
+  rows.forEach(r => Object.keys(r).forEach(k => { seen[k] = true; }));
+  const extra = Object.keys(seen).filter(k => cols.indexOf(k) === -1 && /^[A-Za-z][A-Za-z0-9]{0,40}$/.test(k));
+  if (!extra.length) return cols;
+  const start = cols.filter(String).length + 1;
+  sh.getRange(1, start, 1, extra.length).setValues([extra]).setFontWeight('bold');
+  sh.getRange(2, start, Math.max(1, sh.getMaxRows() - 1), extra.length).setNumberFormat('@');
+  return headers_(sh);
+}
+
 function upsert_(table, rows) {
   if (!rows.length) return;
   const sh = sheet_(table);
-  const cols = headers_(sh);
+  const cols = ensureCols_(sh, rows);
   const idCol = cols.indexOf('id');
   const last = sh.getLastRow();
   const ids = last > 1 ? sh.getRange(2, idCol + 1, last - 1, 1).getValues().map(r => String(r[0])) : [];
@@ -221,10 +236,11 @@ function syncCalendar_(ids) {
     const title = (p.status === 'Inquiry' ? '(Inquiry) ' : p.status === 'Quoted' ? '(Quote) ' : '') + (p.title || p.client) +
       (p.client && String(p.title).indexOf(p.client) === -1 ? ' · ' + p.client : '');
     const timed = /^\d{1,2}:\d{2}/.test(String(p.time || ''));
+    const hours = Number(p.hours) > 0 ? Number(p.hours) : SHOOT_HOURS; // the shoot's length, or 3 hours if not set
     const start = timed ? Utilities.parseDate(p.date + ' ' + String(p.time).slice(0, 5), CAL_TZ, 'yyyy-MM-dd HH:mm') : null;
     const day = Utilities.parseDate(String(p.date), Session.getScriptTimeZone(), 'yyyy-MM-dd');
-    if (!ev) ev = timed ? cal.createEvent(title, start, new Date(start.getTime() + SHOOT_HOURS * 36e5)) : cal.createAllDayEvent(title, day);
-    else if (timed) ev.setTime(start, new Date(start.getTime() + SHOOT_HOURS * 36e5));
+    if (!ev) ev = timed ? cal.createEvent(title, start, new Date(start.getTime() + hours * 36e5)) : cal.createAllDayEvent(title, day);
+    else if (timed) ev.setTime(start, new Date(start.getTime() + hours * 36e5));
     else ev.setAllDayDate(day);
     ev.setTitle(title);
     ev.setLocation(String(p.location || ''));
@@ -242,7 +258,7 @@ function description_(p) {
   return [
     'Client: ' + (p.client || ''),
     p.phone ? 'Phone: ' + p.phone + (phone ? '  ·  WhatsApp: https://wa.me/' + phone : '') : '',
-    [p.type, p.status].filter(String).join(' · '),
+    [p.type, p.status, n(p.hours) ? n(p.hours) + (n(p.hours) === 1 ? ' hour' : ' hours') : ''].filter(String).join(' · '),
     String(p.marketing).toUpperCase() === 'TRUE' ? 'Free shoot for my page' :
       (price ? 'Price ' + price + (off ? ' (after ' + d + ' discount)' : '') + (n(p.paid) ? ' · received ' + n(p.paid) : '') + (price > n(p.paid) ? ' · due ' + (price - n(p.paid)) : '') : ''),
     p.notes ? '\n' + p.notes : '',
