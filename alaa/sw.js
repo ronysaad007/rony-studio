@@ -1,4 +1,18 @@
-/* Alaa Shoot's offline cache: the shared worker, with its own cache name. */
-self.APP = 'alaa';
-self.EXTRA = ['theme.css', 'icons/icon-192.png', 'icons/icon-512.png'];
-importScripts('../sw.js');
+/* Alaa Shoot's offline cache. Self-contained: it caches Alaa's own frozen copy of the app. */
+const CACHE = 'alaa-v7';
+const SHELL = ['./', 'index.html', 'manifest.webmanifest', 'app.js', 'styles.css', 'config.js', 'theme.css', 'icons/icon-192.png', 'icons/icon-512.png'];
+
+self.addEventListener('install', e => {
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
+});
+self.addEventListener('activate', e => {
+  e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k.startsWith('alaa-') && k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim()));
+});
+self.addEventListener('fetch', e => {
+  if (e.request.method !== 'GET' || new URL(e.request.url).origin !== location.origin) return;
+  e.respondWith(
+    fetch(e.request)
+      .then(res => { if (res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); } return res; })
+      .catch(() => caches.match(e.request, { ignoreSearch: true }).then(r => r || caches.match('index.html')))
+  );
+});
