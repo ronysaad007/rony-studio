@@ -177,7 +177,7 @@ function parsePays(v) {
   let a; try { a = typeof v === 'string' ? (v ? JSON.parse(v) : []) : v || []; } catch (e) { a = []; }
   return Array.isArray(a) ? a.filter(x => x && /^\d{4}-\d{2}-\d{2}/.test(x.d) && num(x.a) > 0).map(x => ({ d: String(x.d).slice(0, 10), a: num(x.a) })) : [];
 }
-const normPays = v => { const a = parsePays(v); return a.length ? JSON.stringify(a) : ''; };
+function normPays(v) { const a = parsePays(v); return a.length ? JSON.stringify(a) : ''; }
 function paysOf(p) {
   const a = parsePays(p.payments), older = p.paid - a.reduce((t, x) => t + x.a, 0);
   return older > 0 ? [{ d: dayOf(p), a: older, old: true }, ...a] : a;
