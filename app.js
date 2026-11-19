@@ -94,7 +94,7 @@ function normP(p) {
     id: String(p.id), code: String(p.code || ''), client: String(p.client || ''), phone: String(p.phone || ''),
     email: String(p.email || ''), instagram: String(p.instagram || ''), title: String(p.title || ''), type: String(p.type || ''),
     date: String(p.date || ''), time: String(p.time || ''), hours: Math.max(0, num(p.hours)), location: String(p.location || ''),
-    price: num(p.price), discount: normDisc(p.discount), paid: num(p.paid), expenses: num(p.expenses),
+    price: num(p.price), discount: normDisc(p.discount), paid: num(p.paid), payments: normPays(p.payments), expenses: num(p.expenses),
     status: STATUSES.includes(p.status) ? p.status : 'Booked', marketing: bool(p.marketing), posted: bool(p.posted),
     source: String(p.source || ''), drive: String(p.drive || ''), notes: String(p.notes || ''),
     created: String(p.created || today()), updated: String(p.updated || ''),
@@ -171,6 +171,24 @@ const crewCost = id => crewOf(id).reduce((s, c) => s + c.fee, 0);
 const expensesOf = id => db.expenses.filter(x => x.projectId === id);
 const linkedCost = id => expensesOf(id).reduce((s, x) => s + x.amount, 0);
 const balance = p => Math.max(0, net(p) - p.paid);
+// Each payment with the day it came in: [{ d: '2026-11-19', a: 2000 }], kept on the project as JSON text.
+// Money in counts on that day. What was received before dates were kept counts on the shoot date.
+function parsePays(v) {
+  let a; try { a = typeof v === 'string' ? (v ? JSON.parse(v) : []) : v || []; } catch (e) { a = []; }
+  return Array.isArray(a) ? a.filter(x => x && /^\d{4}-\d{2}-\d{2}/.test(x.d) && num(x.a) > 0).map(x => ({ d: String(x.d).slice(0, 10), a: num(x.a) })) : [];
+}
+const normPays = v => { const a = parsePays(v); return a.length ? JSON.stringify(a) : ''; };
+function paysOf(p) {
+  const a = parsePays(p.payments), older = p.paid - a.reduce((t, x) => t + x.a, 0);
+  return older > 0 ? [{ d: dayOf(p), a: older, old: true }, ...a] : a;
+}
+// "Received" changed from p.paid to paid: more money is a payment on `date`; less takes back the latest payments.
+function syncPays(p, paid, date = today()) {
+  const a = parsePays(p.payments); let delta = num(paid) - num(p.paid);
+  if (delta > 0) a.push({ d: date, a: delta });
+  while (delta < 0 && a.length) { const last = a[a.length - 1]; if (last.a <= -delta) { delta += last.a; a.pop(); } else { last.a += delta; delta = 0; } }
+  return a.length ? JSON.stringify(a) : '';
+}
 // Everything the shoot cost you: other expenses, your team, and logged expenses linked to it.
 const cost = p => p.expenses + crewCost(p.id) + linkedCost(p.id);
 const profit = p => net(p) - cost(p);
@@ -289,7 +307,7 @@ function saveRow(table, row) {
   saveLocal(); push({ action: 'upsert', table, rows: [row] });
 }
 function deleteRow(table, id) { db[table] = db[table].filter(x => x.id !== id); saveLocal(); push({ action: 'delete', table, ids: [id] }); }
-function patchProject(id, patch) { const p = project(id); if (!p) return; Object.assign(p, patch); saveProject(p); render(); }
+function patchProject(id, patch) { const p = project(id); if (!p) return; if ('paid' in patch) patch.payments = syncPays(p, patch.paid); Object.assign(p, patch); saveProject(p); render(); }
 function patchItem(id, patch) { const it = db.items.find(x => x.id === id); if (!it) return; Object.assign(it, patch); saveLocal(); push({ action: 'upsert', table: 'items', rows: [it] }); render(); }
 function deleteProject(id) {
   db.projects = db.projects.filter(p => p.id !== id);
@@ -673,10 +691,13 @@ function moneyStats(from, to) {
   const team = live.reduce((s, p) => s + crewCost(p.id), 0);
   const other = live.reduce((s, p) => s + p.expenses, 0);
   const logged = ledger.reduce((s, x) => s + x.amount, 0);
+  // Booked: the value of shoots dated in the period. Received: money that actually came in during it.
   const revenue = paidP.reduce((s, p) => s + net(p), 0) + retIn;
   const collected = paidP.reduce((s, p) => s + Math.min(p.paid, net(p) || p.paid), 0) + retIn;
+  const pays = db.projects.flatMap(p => paysOf(p).filter(x => inRange(x.d)));
+  const received = pays.reduce((s, x) => s + x.a, 0) + retIn;
   const spent = team + other + logged;
-  return { live, paidP, retPaid, retIn, ledger, team, other, logged, revenue, collected, spent, profit: revenue - spent };
+  return { live, paidP, retPaid, retIn, ledger, team, other, logged, revenue, collected, received, payCount: pays.length, spent, profit: received - spent };
 }
 const monthEnd = mk => ymd(new Date(+mk.slice(0, 4), +mk.slice(5), 0));
 function barList(rows, empty, fmt = money) {
@@ -756,7 +777,7 @@ function renderMoney() {
   ${body}`;
   if (tab === 'docs') $('#dq').addEventListener('input', e => { const q = e.target.value.toLowerCase(); $$('#dlist .doc-it').forEach(r => { r.hidden = !r.textContent.toLowerCase().includes(q); }); });
 }
-const moneyChart = (bks, w) => columnChart(bks, [{ k: 'rev', name: 'Revenue', color: 'var(--accent)' }, { k: 'exp', name: 'Spent', color: '#ffffff40' }],
+const moneyChart = (bks, w) => columnChart(bks, [{ k: 'rev', name: 'Received', color: 'var(--accent)' }, { k: 'exp', name: 'Spent', color: '#ffffff40' }],
   { line: { k: 'prof', name: 'Profit' }, axis: kf, tip: money, label: 'Revenue, spending and profit', w });
 const GRAY = '#ffffff40', GRAY2 = '#ffffff1c';
 // Charts: the whole business at a glance, for the chosen period. Money, shoots, bookings, clients, deliveries, posting.
@@ -776,7 +797,7 @@ function chartsBody() {
     const ps = live.filter(p => p.date >= b.from && p.date <= b.to), m = moneyStats(b.from, b.to);
     const keys = [...new Set(ps.filter(p => !p.marketing).map(clientKey).filter(Boolean))];
     const fresh = keys.filter(k => { const f = firsts.get(k); return f >= b.from && f <= b.to; }).length;
-    return { ...b, v: { rev: m.revenue, exp: m.spent, prof: m.profit, paid: ps.filter(p => !p.marketing).length, free: ps.filter(p => p.marketing).length, fresh, back: keys.length - fresh } };
+    return { ...b, v: { rev: m.received, exp: m.spent, prof: m.profit, paid: ps.filter(p => !p.marketing).length, free: ps.filter(p => p.marketing).length, fresh, back: keys.length - fresh } };
   });
   const newC = slice.reduce((s, b) => s + b.v.fresh, 0), backC = slice.reduce((s, b) => s + b.v.back, 0);
   const days = DAYS.map((d, i) => ({ label: d, title: d, v: { n: live.filter(p => parseDay(p.date).getDay() === i).length } }));
@@ -798,15 +819,15 @@ function chartsBody() {
   return [`${per} · ${plural(live.length, 'shoot')} · ${plural(newC, 'new client')}`, `
   <div class="kpis">
     <div class="kpi"><small>Shoots</small><b>${live.length}</b><em>${paidP.length} paid · ${free.length} free</em></div>
-    <div class="kpi"><small>Revenue</small><b>${money(st.revenue)}</b><em>${pct(st.profit, st.revenue)}% kept as profit</em></div>
+    <div class="kpi"><small>Received</small><b>${money(st.received)}</b><em>${pct(st.profit, st.received)}% kept as profit</em></div>
     <div class="kpi"><small>Clients</small><b>${newC + backC}</b><em>${newC} new · ${backC} came back</em></div>
     <div class="kpi"><small>Inquiries won</small><b>${pct(won, created.length)}%</b><em>${won} of ${plural(created.length, 'new project')}</em></div>
   </div>
   <h2 class="chart-h">Money</h2>
-  ${panel('Revenue, spent &amp; profit', `${per} · by ${bucketUnit(bks).toLowerCase()}`, moneyChart(slice))}
+  ${panel('Received, spent &amp; profit', `${per} · by ${bucketUnit(bks).toLowerCase()}`, moneyChart(slice))}
   <div class="cols2">
     ${panel('Collected so far', `shoots ${per.toLowerCase()}`, stackBar([{ name: 'Collected', v: paidP.reduce((sum, p) => sum + Math.min(p.paid, net(p)), 0), c: 'var(--accent)' }, { name: 'Still owed', v: owed, c: GRAY }], 'No paid shoots in this period', money))}
-    ${panel('Revenue by shoot type', per, barList(Object.entries(typeRev).sort((a, b) => b[1] - a[1]).map(([k, v]) => ({ k, v, sub: `${plural(paidP.filter(p => (p.type || 'Other') === k).length, 'shoot')} · average ${money(v / paidP.filter(p => (p.type || 'Other') === k).length)}` })), 'No paid shoots in this period'))}
+    ${panel('Booked by shoot type', per, barList(Object.entries(typeRev).sort((a, b) => b[1] - a[1]).map(([k, v]) => ({ k, v, sub: `${plural(paidP.filter(p => (p.type || 'Other') === k).length, 'shoot')} · average ${money(v / paidP.filter(p => (p.type || 'Other') === k).length)}` })), 'No paid shoots in this period'))}
   </div>
   <h2 class="chart-h">Shoots &amp; bookings</h2>
   ${panel('Shoots', `${per} · by ${bucketUnit(bks).toLowerCase()}`, columnChart(slice, [{ k: 'paid', name: 'Paid', color: 'var(--accent)' }, { k: 'free', name: 'Free for your page', color: GRAY }], { stack: true, label: 'Shoots over time', h: 200 }))}
@@ -842,7 +863,7 @@ function moneyReport() {
   const owedTotal = owed.reduce((s, p) => s + balance(p), 0) + db.retainers.filter(retDue).reduce((s, r) => s + r.fee, 0);
 
   // Revenue and spending as columns, profit as a line, on one axis, sliced to fit the period.
-  const series = periodBuckets().map(b => { const m = moneyStats(b.from, b.to); return { ...b, v: { rev: m.revenue, exp: m.spent, prof: m.profit } }; });
+  const series = periodBuckets().map(b => { const m = moneyStats(b.from, b.to); return { ...b, v: { rev: m.received, exp: m.spent, prof: m.profit } }; });
   const svg = moneyChart(series);
   const unit = bucketUnit(series);
 
@@ -869,19 +890,19 @@ function moneyReport() {
   ui.moneySeries = series;
   return [`${per[ui.period]} · ${st.paidP.length} paid project${st.paidP.length === 1 ? '' : 's'} · average ${money(avg)}`, `
   <div class="kpis">
-    <div class="kpi"><small>Revenue</small><b>${money(st.revenue)}</b><em>collected ${money(st.collected)} · ${pct(st.collected, st.revenue)}%</em></div>
+    <div class="kpi"><small>Received</small><b>${money(st.received)}</b><em>money that came in · booked ${money(st.revenue)}</em></div>
     <div class="kpi"><small>Spent</small><b>${money(st.spent)}</b><em>team ${money(st.team)} · other ${money(st.spent - st.team)}</em></div>
-    <div class="kpi"><small>Profit</small><b class="acc">${money(st.profit)}</b><em>${pct(st.profit, st.revenue)}% margin</em></div>
+    <div class="kpi"><small>Profit</small><b class="acc">${money(st.profit)}</b><em>received minus spent · ${pct(st.profit, st.received)}%</em></div>
     <button class="kpi" data-jump="m-collect"><small>Still to collect</small><b>${money(owedTotal)}</b><em>${owed.length} client${owed.length === 1 ? '' : 's'} owe you</em></button>
   </div>
   <section class="panel" id="m-collect">${collectPanel()}</section>
-  <section class="panel"><div class="ph"><h2>Revenue, spent &amp; profit</h2><small>${per[ui.period]} · by ${unit.toLowerCase()}</small></div>${svg}
+  <section class="panel"><div class="ph"><h2>Received, spent &amp; profit</h2><small>${per[ui.period]} · by ${unit.toLowerCase()}</small></div>${svg}
     <p class="fine">Hover a ${unit.toLowerCase()} to see its numbers. More charts under <a class="linkbtn" href="#money/charts">Charts</a>.</p></section>
   <div class="cols">
     <section class="panel"><div class="ph"><h2>Where the money goes</h2><small>${money(st.spent)} · ${per[ui.period]}</small></div>
       ${barList(spendRows, 'No spending in this period. Log rentals, AI tools, editing and more with “+ Add expense”.')}</section>
     <section class="panel"><div class="ph"><h2>${unit} by ${unit.toLowerCase()}</h2><button class="linkbtn" data-money-csv>Download CSV</button></div>
-      <div class="tbl rep"><table><thead><tr><th>${unit}</th><th class="n">Revenue</th><th class="n">Spent</th><th class="n">Profit</th></tr></thead><tbody>
+      <div class="tbl rep"><table><thead><tr><th>${unit}</th><th class="n">Received</th><th class="n">Spent</th><th class="n">Profit</th></tr></thead><tbody>
       ${series.filter(s => s.v.rev || s.v.exp).reverse().map(s => `<tr><td>${esc(s.title)}</td><td class="n">${nf(s.v.rev)}</td><td class="n">${nf(s.v.exp)}</td><td class="n ${s.v.prof < 0 ? 'neg' : ''}">${nf(s.v.prof)}</td></tr>`).join('') || '<tr><td colspan="4" class="fine">Nothing in this period yet.</td></tr>'}
       <tr class="tot"><td>${per[ui.period]}</td><td class="n">${nf(series.reduce((a, s) => a + s.v.rev, 0))}</td><td class="n">${nf(series.reduce((a, s) => a + s.v.exp, 0))}</td><td class="n">${nf(series.reduce((a, s) => a + s.v.prof, 0))}</td></tr></tbody></table></div>
       <p class="fine">Amounts in ${esc(setting('currency'))}.</p></section>
@@ -927,7 +948,7 @@ function expensesBody() {
   </div>`];
 }
 function exportMoneyCsv() {
-  const rows = [[bucketUnit(ui.moneySeries || []), 'Revenue', 'Spent', 'Profit']].concat((ui.moneySeries || []).map(s => [`"${s.title}"`, s.v.rev, s.v.exp, s.v.prof]));
+  const rows = [[bucketUnit(ui.moneySeries || []), 'Received', 'Spent', 'Profit']].concat((ui.moneySeries || []).map(s => [`"${s.title}"`, s.v.rev, s.v.exp, s.v.prof]));
   download(`studio-money-${today()}.csv`, '﻿' + rows.map(r => r.join(',')).join('\n'), 'text/csv');
 }
 
@@ -1305,6 +1326,8 @@ function openProject(id, preset, tab, then) {
   if (!p.id) return;
   let items = isNew ? (preset && preset._items) || [] : itemsOf(p.id).map(i => ({ ...i }));
   let crew = isNew ? [] : crewOf(p.id).map(c => ({ ...c }));
+  // Payments in the form: `pays` matches `paysPaid`; a change to Received is dated today when saved.
+  let pays = p.payments, paysPaid = p.paid;
   const opt = (arr, v) => [...new Set([...arr, v].filter(Boolean))].map(o => `<option ${o === v ? 'selected' : ''}>${esc(o)}</option>`).join('');
   const dr = $('#drawer');
   dr.innerHTML = `
@@ -1353,7 +1376,8 @@ function openProject(id, preset, tab, then) {
       <div class="money-sum" id="moneySum"></div>
       ${isNew ? '' : `<div class="plan" id="plan"></div>
       <div id="linkedExp"></div>
-      <div class="payrow"><input id="payAmt" type="number" inputmode="decimal" min="0" placeholder="Add a payment you received"><button type="button" class="btn sm" id="payAdd">Add payment</button><button type="button" class="btn sm ghost" id="payFull">Paid in full</button></div>`}
+      <div class="paylist" id="payList"></div>
+      <div class="payrow"><input id="payAmt" type="number" inputmode="decimal" min="0" placeholder="Add a payment you received"><input id="payDate" type="date" value="${today()}" aria-label="Received on"><button type="button" class="btn sm" id="payAdd">Add payment</button><button type="button" class="btn sm ghost" id="payFull">Paid in full</button></div>`}
     </section>
     <section class="dr-sec" data-pt="money"><h3>Team <button type="button" class="linkbtn" id="crAdd">+ Add</button></h3>
       <div class="items" id="crew"></div>
@@ -1395,6 +1419,10 @@ function openProject(id, preset, tab, then) {
     $('#moneySum').innerHTML = `${off ? `<div><small>Client pays</small><b>${money(price)}</b><small>${discLabel(now.discount)} off ${money(list)}</small></div>` : ''}<div><small>Balance</small><b style="color:${price - paid > 0 ? 'var(--bad)' : 'var(--ok)'}">${money(Math.max(0, price - paid))}</b></div><div><small>Profit${crew.length || lx.length ? ' after costs' : ''}</small><b>${money(price - ex)}</b></div><div><small>Margin</small><b>${price ? Math.round((price - ex) / price * 100) : 0}%</b></div>`;
     if (isNew) return;
     const dep = depositOf(now, paid);
+    const payRows = paysOf({ ...now, payments: pays, paid: paysPaid });
+    $('#payList').innerHTML = payRows.length ? payRows.map((x, i) => `<div class="pay-it"><span>${x.old ? 'Before dates were kept' : fmtDate(x.d)}</span><b>${money(x.a)}</b>${x.old ? '' : `<button type="button" class="del" data-pay-rm="${i - (payRows[0].old ? 1 : 0)}" aria-label="Remove this payment">✕</button>`}</div>`).join('')
+      + (paid !== paysPaid ? `<p class="fine">${paid > paysPaid ? money(paid - paysPaid) + ' more will be dated today' : money(paysPaid - paid) + ' less, taken from the latest payments'} when you save.</p>` : '') : '';
+    $$('[data-pay-rm]', dr).forEach(b => { b.onclick = () => { const a = parsePays(pays), x = a.splice(+b.dataset.payRm, 1)[0]; pays = a.length ? JSON.stringify(a) : ''; paysPaid -= x.a; $('#f-paid').value = Math.max(0, num(val('paid')) - x.a); drawMoney(); }; });
     $('#plan').innerHTML = dep ? `<div class="plan-it ${dep.left ? (dep.due && dep.due < today() ? 'late' : '') : 'done'}"><span><b>Deposit ${money(dep.amt)}</b><small>${esc(dep.no)}${dep.due ? ' · due ' + fmtDate(dep.due) : ''}</small></span>
         ${dep.left ? `<button type="button" class="btn sm" id="depIn">Deposit received</button>` : '<span class="tag t-ok">Received</span>'}</div>
       <div class="plan-it ${bal ? '' : 'done'}"><span><b>Balance ${money(Math.max(0, price - Math.max(paid, dep.amt)))}</b><small>after the shoot${now.date ? ', ' + fmtDate(now.date) : ''}</small></span>${bal ? '' : '<span class="tag t-ok">Paid</span>'}</div>`
@@ -1443,7 +1471,7 @@ function openProject(id, preset, tab, then) {
       ...p, client: val('client'), phone: val('phone'), instagram: val('instagram'), email: val('email'), source: $('#f-source').value,
       title: val('title') || `${$('#f-type').value} – ${val('client')}`, type: $('#f-type').value, status: $('#f-status').value,
       date: val('date'), time: val('time'), hours: hasCol('hours') ? val('hours') : p.hours, location: val('location'), marketing: $('#f-marketing').checked, posted: $('#f-posted').checked,
-      price: val('price'), discount: canDiscount() ? val('discount') : p.discount, paid: val('paid'), expenses: val('expenses'), drive: val('drive'), notes: $('#f-notes').value.trim(),
+      price: val('price'), discount: canDiscount() ? val('discount') : p.discount, paid: val('paid'), payments: syncPays({ payments: pays, paid: paysPaid }, val('paid')), expenses: val('expenses'), drive: val('drive'), notes: $('#f-notes').value.trim(),
     });
     const k = fpkg();
     if (isNew && k && !val('title')) out.title = `${k.name} – ${out.client}`;
@@ -1453,7 +1481,7 @@ function openProject(id, preset, tab, then) {
     saveProject(out, its, team);
     saveClientInfo(out, { trn: val('trn'), address: $('#f-caddr').value });
     if (close && isNew && out.status === 'Quoted') { closeLayers(); render(); openProject(out.id, null, 'docs', 'quote'); }
-    else if (close) { closeLayers(); render(); toast(isNew ? (out.status === 'Inquiry' ? 'Inquiry added' : 'Booking added') : 'Saved'); } else { Object.assign(p, out); ui.keepScroll = true; render(); }
+    else if (close) { closeLayers(); render(); toast(isNew ? (out.status === 'Inquiry' ? 'Inquiry added' : 'Booking added') : 'Saved'); } else { Object.assign(p, out); pays = out.payments; paysPaid = out.paid; ui.keepScroll = true; render(); drawMoney(); }
     return true;
   };
   // The usual deliverables for the chosen type: ticked on a new booking, a one-tap add on an existing one.
@@ -1509,7 +1537,12 @@ function openProject(id, preset, tab, then) {
   $('#itAdd').onclick = () => { items.push({ id: uid(), projectId: p.id, type: list('itemTypes')[0] || '', qty: 1, title: '', status: 'Pending', due: '', notes: '' }); drawItems(); $$('#items .item input[data-k=title]').pop().focus(); };
   $('#pSave').onclick = () => save(true);
   if (isNew) return;
-  $('#payAdd').onclick = () => { const a = num($('#payAmt').value); if (!a) return; $('#f-paid').value = num(val('paid')) + a; $('#payAmt').value = ''; drawMoney(); toast(`${money(a)} added. Save to keep it.`); };
+  $('#payAdd').onclick = () => {
+    const a = num($('#payAmt').value), d = $('#payDate').value || today(); if (!a) return;
+    const added = parsePays(pays); added.push({ d, a }); added.sort((x, y) => x.d.localeCompare(y.d));
+    pays = JSON.stringify(added); paysPaid += a; $('#f-paid').value = num(val('paid')) + a; $('#payAmt').value = '';
+    drawMoney(); toast(`${money(a)} on ${fmtDate(d)} added. Save to keep it.`);
+  };
   $('#payFull').onclick = () => { $('#f-paid').value = net(normP({ price: val('price'), discount: val('discount') })); drawMoney(); };
   $('#pInvoice').onclick = () => { printInvoice(project(p.id)); drawDocs(); };
   $('#pQuote').onclick = () => openQuote(project(p.id), () => { if ($('#f-discount')) $('#f-discount').value = project(p.id).discount; drawDocs(); drawMoney(); });
