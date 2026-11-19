@@ -80,7 +80,11 @@ const DEFAULTS = {
   postDays: '7', deliverDays: '14',
   ...(STUDIO.defaults || {}),
 };
-const canDiscount = () => store.get(APP + '.disc', false);
+const canDiscount = () => store.get(APP + '.disc', false) || store.get(APP + '.auto', false);
+// Columns the Sheet has: new ones (like "hours") only save once the Apps Script is updated.
+const hasCol = c => store.get(APP + '.auto', false) || (store.get(APP + '.cols', []) || []).includes(c);
+const fmtHours = h => (num(h) ? `${num(h)} hour${num(h) === 1 ? '' : 's'}` : '');
+const timeAndHours = p => [p.time && fmtTime(p.time), p.hours && fmtHours(p.hours)].filter(Boolean).join(' · ');
 const setting = k => { const r = db.settings.find(s => s.id === k); return r && r.value !== '' ? String(r.value) : DEFAULTS[k]; };
 const list = k => setting(k).split('\n').map(s => s.trim()).filter(Boolean);
 const money = v => `${setting('currency')} ${Math.round(num(v)).toLocaleString('en-US')}`;
@@ -89,8 +93,8 @@ function normP(p) {
   return {
     id: String(p.id), code: String(p.code || ''), client: String(p.client || ''), phone: String(p.phone || ''),
     email: String(p.email || ''), instagram: String(p.instagram || ''), title: String(p.title || ''), type: String(p.type || ''),
-    date: String(p.date || ''), time: String(p.time || ''), location: String(p.location || ''),
-    price: num(p.price), discount: normDisc(p.discount), paid: num(p.paid), expenses: num(p.expenses),
+    date: String(p.date || ''), time: String(p.time || ''), hours: Math.max(0, num(p.hours)), location: String(p.location || ''),
+    price: num(p.price), discount: normDisc(p.discount), paid: num(p.paid), payments: normPays(p.payments), expenses: num(p.expenses),
     status: STATUSES.includes(p.status) ? p.status : 'Booked', marketing: bool(p.marketing), posted: bool(p.posted),
     source: String(p.source || ''), drive: String(p.drive || ''), notes: String(p.notes || ''),
     created: String(p.created || today()), updated: String(p.updated || ''),
@@ -167,6 +171,24 @@ const crewCost = id => crewOf(id).reduce((s, c) => s + c.fee, 0);
 const expensesOf = id => db.expenses.filter(x => x.projectId === id);
 const linkedCost = id => expensesOf(id).reduce((s, x) => s + x.amount, 0);
 const balance = p => Math.max(0, net(p) - p.paid);
+// Each payment with the day it came in: [{ d: '2026-11-19', a: 2000 }], kept on the project as JSON text.
+// Money in counts on that day. What was received before dates were kept counts on the shoot date.
+function parsePays(v) {
+  let a; try { a = typeof v === 'string' ? (v ? JSON.parse(v) : []) : v || []; } catch (e) { a = []; }
+  return Array.isArray(a) ? a.filter(x => x && /^\d{4}-\d{2}-\d{2}/.test(x.d) && num(x.a) > 0).map(x => ({ d: String(x.d).slice(0, 10), a: num(x.a) })) : [];
+}
+const normPays = v => { const a = parsePays(v); return a.length ? JSON.stringify(a) : ''; };
+function paysOf(p) {
+  const a = parsePays(p.payments), older = p.paid - a.reduce((t, x) => t + x.a, 0);
+  return older > 0 ? [{ d: dayOf(p), a: older, old: true }, ...a] : a;
+}
+// "Received" changed from p.paid to paid: more money is a payment on `date`; less takes back the latest payments.
+function syncPays(p, paid, date = today()) {
+  const a = parsePays(p.payments); let delta = num(paid) - num(p.paid);
+  if (delta > 0) a.push({ d: date, a: delta });
+  while (delta < 0 && a.length) { const last = a[a.length - 1]; if (last.a <= -delta) { delta += last.a; a.pop(); } else { last.a += delta; delta = 0; } }
+  return a.length ? JSON.stringify(a) : '';
+}
 // Everything the shoot cost you: other expenses, your team, and logged expenses linked to it.
 const cost = p => p.expenses + crewCost(p.id) + linkedCost(p.id);
 const profit = p => net(p) - cost(p);
@@ -254,6 +276,8 @@ async function pull(silent) {
     };
     lastSync = Date.now(); store.set(APP + '.lastSync', lastSync);
     store.set(APP + '.disc', (j.projects || []).some(r => 'discount' in r));
+    store.set(APP + '.cols', [...new Set((j.projects || []).flatMap(r => Object.keys(r)))]);
+    store.set(APP + '.auto', j.schema === 'auto');
     saveLocal(); setSync('ok', 'Synced'); ui.keepScroll = true; render();
   } catch (e) {
     setSync('off', 'Offline');
@@ -283,7 +307,7 @@ function saveRow(table, row) {
   saveLocal(); push({ action: 'upsert', table, rows: [row] });
 }
 function deleteRow(table, id) { db[table] = db[table].filter(x => x.id !== id); saveLocal(); push({ action: 'delete', table, ids: [id] }); }
-function patchProject(id, patch) { const p = project(id); if (!p) return; Object.assign(p, patch); saveProject(p); render(); }
+function patchProject(id, patch) { const p = project(id); if (!p) return; if ('paid' in patch) patch.payments = syncPays(p, patch.paid); Object.assign(p, patch); saveProject(p); render(); }
 function patchItem(id, patch) { const it = db.items.find(x => x.id === id); if (!it) return; Object.assign(it, patch); saveLocal(); push({ action: 'upsert', table: 'items', rows: [it] }); render(); }
 function deleteProject(id) {
   db.projects = db.projects.filter(p => p.id !== id);
@@ -316,7 +340,7 @@ function waNumber(phone) {
 }
 function waText(p, kind) {
   const first = p.client.split(/\s+/)[0] || 'there';
-  const when = p.date ? `${fmtDate(p.date)}${p.time ? ' at ' + fmtTime(p.time) : ''}` : 'the date we agreed';
+  const when = p.date ? `${fmtDate(p.date)}${p.time ? ' at ' + fmtTime(p.time) : ''}${p.hours ? ` (${fmtHours(p.hours)})` : ''}` : 'the date we agreed';
   const name = setting('businessName');
   if (kind === 'confirm') return `Hi ${first}, this is ${name}. Your ${p.type || 'shoot'} is confirmed for ${when}${p.location && !/^https?:/.test(p.location) ? ' at ' + p.location : ''}.${p.price ? ` Total: ${money(net(p))}${p.paid ? `, received ${money(p.paid)}` : ''}.` : ''} Looking forward to it!`;
   if (kind === 'remind') return `Hi ${first}, a quick reminder about your ${p.type || 'shoot'} on ${when}. See you there! — ${name}`;
@@ -422,7 +446,7 @@ function projectRow(p) {
   return `<div class="row ${p.status === 'Cancelled' ? 'cancelled' : ''}" data-open="${p.id}" role="button" tabindex="0">
     ${dateBlock(p)}
     <div class="main"><strong>${esc(p.title || p.client)}</strong>
-      <small>${esc(p.client)}${p.type ? ' · ' + esc(p.type) : ''}${p.time ? ' · ' + fmtTime(p.time) : ''}${its.length ? ` · ${done}/${its.length} delivered` : ''}${left ? ` · left: ${esc(left)}` : ''}</small></div>
+      <small>${esc(p.client)}${p.type ? ' · ' + esc(p.type) : ''}${timeAndHours(p) ? ' · ' + timeAndHours(p) : ''}${its.length ? ` · ${done}/${its.length} delivered` : ''}${left ? ` · left: ${esc(left)}` : ''}</small></div>
     ${steps(p)}
     <div class="money"><b>${p.marketing ? 'Free' : money(net(p))}</b><span class="tag ${payCls}">${pay}${!p.marketing && balance(p) && p.paid ? ' · ' + money(balance(p)) + ' left' : ''}</span></div>
   </div>`;
@@ -473,7 +497,7 @@ function renderToday() {
     ${rest.length ? `<section class="panel"><div class="ph"><h2>Also needs you</h2><small>${rest.length} item${rest.length === 1 ? '' : 's'}</small></div>${renderAlerts(rest)}</section>` : ''}`;
   const main = `<section class="panel" id="t-shoots"><div class="ph"><h2>Upcoming shoots</h2><button class="linkbtn" data-jump="t-cal">Calendar ↓</button></div>
         ${next ? `<div class="hero"><div><div class="label">Next · ${esc(next.code)}</div><h3>${esc(next.title)}</h3>
-          <div class="meta"><span>${fmtDate(next.date)}${next.time ? ' · ' + fmtTime(next.time) : ''}</span><span>${esc(next.client)}</span>${next.location ? `<span>${loc(next)}</span>` : ''}</div>
+          <div class="meta"><span>${fmtDate(next.date)}${timeAndHours(next) ? ' · ' + timeAndHours(next) : ''}</span><span>${esc(next.client)}</span>${next.location ? `<span>${loc(next)}</span>` : ''}</div>
           <div class="acts">${waBtn(next, 'remind', 'Send reminder')}<button class="btn sm" data-open="${next.id}">Open</button></div></div>
           <div class="cd" id="cd" data-at="${next.date}T${next.time || '00:00'}"></div></div>` : '<div class="empty"><b>Nothing booked ahead</b><button class="btn primary sm" data-add style="margin-top:10px">+ New booking</button></div>'}
         ${upcoming.length > 1 ? `<div class="mini">${upcoming.slice(1, 8).map(p => `<div class="mini-it" data-open="${p.id}" role="button" tabindex="0"><div><b>${esc(p.title)}</b><small>${esc(p.client)}${p.location && !/^https?:/.test(p.location) ? ' · ' + esc(p.location) : ''}</small></div><div class="r">${fmtDate(p.date)}<small>${p.date === t ? 'Today' : 'in ' + daysBetween(t, p.date) + ' d'}${p.time ? ' · ' + fmtTime(p.time) : ''}</small></div></div>`).join('')}</div>` : ''}
@@ -582,7 +606,7 @@ function kcard(p) {
   const dep = ['Inquiry', 'Quoted', 'Booked'].includes(p.status) && !p.marketing ? depositOf(p) : null;
   return `<div class="kcard" draggable="true" data-open="${p.id}" data-id="${p.id}" role="button" tabindex="0">
     <b>${esc(p.title || p.client)}</b><small>${esc(p.client)}${p.type ? ' · ' + esc(p.type) : ''}</small>
-    <span class="kdate ${passed ? 'late' : ''}">${p.date ? fmtDate(p.date) : 'No date'}${p.time ? ' · ' + fmtTime(p.time) : ''}</span>
+    <span class="kdate ${passed ? 'late' : ''}">${p.date ? fmtDate(p.date) : 'No date'}${timeAndHours(p) ? ' · ' + timeAndHours(p) : ''}</span>
     <div class="ktags">${!booked(p) ? '' : `<span class="tag ${payCls}">${pay}</span>`}${its.length && ['Shot', 'Editing', 'Delivered'].includes(p.status) ? `<span class="tag ${done === its.length ? 't-ok' : 't-mute'}">${done}/${its.length} delivered</span>` : ''}${late ? `<span class="tag t-bad">${late} late</span>` : ''}${passed ? '<span class="tag t-warn">Date passed</span>' : ''}${dep && dep.left ? `<span class="tag ${dep.due && dep.due < t ? 't-bad' : 't-warn'}">Deposit ${dep.due && dep.due < t ? 'late' : 'due'}</span>` : ''}${p.marketing ? '<b>Free</b>' : p.price ? `<b>${money(net(p))}</b>` : ''}</div>
     ${nx ? `<button type="button" class="btn sm knext" data-status="${p.id}" data-to="${nx[0]}">${nx[1]} →</button>` : ''}</div>`;
 }
@@ -667,10 +691,13 @@ function moneyStats(from, to) {
   const team = live.reduce((s, p) => s + crewCost(p.id), 0);
   const other = live.reduce((s, p) => s + p.expenses, 0);
   const logged = ledger.reduce((s, x) => s + x.amount, 0);
+  // Booked: the value of shoots dated in the period. Received: money that actually came in during it.
   const revenue = paidP.reduce((s, p) => s + net(p), 0) + retIn;
   const collected = paidP.reduce((s, p) => s + Math.min(p.paid, net(p) || p.paid), 0) + retIn;
+  const pays = db.projects.flatMap(p => paysOf(p).filter(x => inRange(x.d)));
+  const received = pays.reduce((s, x) => s + x.a, 0) + retIn;
   const spent = team + other + logged;
-  return { live, paidP, retPaid, retIn, ledger, team, other, logged, revenue, collected, spent, profit: revenue - spent };
+  return { live, paidP, retPaid, retIn, ledger, team, other, logged, revenue, collected, received, payCount: pays.length, spent, profit: received - spent };
 }
 const monthEnd = mk => ymd(new Date(+mk.slice(0, 4), +mk.slice(5), 0));
 function barList(rows, empty, fmt = money) {
@@ -750,7 +777,7 @@ function renderMoney() {
   ${body}`;
   if (tab === 'docs') $('#dq').addEventListener('input', e => { const q = e.target.value.toLowerCase(); $$('#dlist .doc-it').forEach(r => { r.hidden = !r.textContent.toLowerCase().includes(q); }); });
 }
-const moneyChart = (bks, w) => columnChart(bks, [{ k: 'rev', name: 'Revenue', color: 'var(--accent)' }, { k: 'exp', name: 'Spent', color: '#ffffff40' }],
+const moneyChart = (bks, w) => columnChart(bks, [{ k: 'rev', name: 'Received', color: 'var(--accent)' }, { k: 'exp', name: 'Spent', color: '#ffffff40' }],
   { line: { k: 'prof', name: 'Profit' }, axis: kf, tip: money, label: 'Revenue, spending and profit', w });
 const GRAY = '#ffffff40', GRAY2 = '#ffffff1c';
 // Charts: the whole business at a glance, for the chosen period. Money, shoots, bookings, clients, deliveries, posting.
@@ -770,7 +797,7 @@ function chartsBody() {
     const ps = live.filter(p => p.date >= b.from && p.date <= b.to), m = moneyStats(b.from, b.to);
     const keys = [...new Set(ps.filter(p => !p.marketing).map(clientKey).filter(Boolean))];
     const fresh = keys.filter(k => { const f = firsts.get(k); return f >= b.from && f <= b.to; }).length;
-    return { ...b, v: { rev: m.revenue, exp: m.spent, prof: m.profit, paid: ps.filter(p => !p.marketing).length, free: ps.filter(p => p.marketing).length, fresh, back: keys.length - fresh } };
+    return { ...b, v: { rev: m.received, exp: m.spent, prof: m.profit, paid: ps.filter(p => !p.marketing).length, free: ps.filter(p => p.marketing).length, fresh, back: keys.length - fresh } };
   });
   const newC = slice.reduce((s, b) => s + b.v.fresh, 0), backC = slice.reduce((s, b) => s + b.v.back, 0);
   const days = DAYS.map((d, i) => ({ label: d, title: d, v: { n: live.filter(p => parseDay(p.date).getDay() === i).length } }));
@@ -792,15 +819,15 @@ function chartsBody() {
   return [`${per} · ${plural(live.length, 'shoot')} · ${plural(newC, 'new client')}`, `
   <div class="kpis">
     <div class="kpi"><small>Shoots</small><b>${live.length}</b><em>${paidP.length} paid · ${free.length} free</em></div>
-    <div class="kpi"><small>Revenue</small><b>${money(st.revenue)}</b><em>${pct(st.profit, st.revenue)}% kept as profit</em></div>
+    <div class="kpi"><small>Received</small><b>${money(st.received)}</b><em>${pct(st.profit, st.received)}% kept as profit</em></div>
     <div class="kpi"><small>Clients</small><b>${newC + backC}</b><em>${newC} new · ${backC} came back</em></div>
     <div class="kpi"><small>Inquiries won</small><b>${pct(won, created.length)}%</b><em>${won} of ${plural(created.length, 'new project')}</em></div>
   </div>
   <h2 class="chart-h">Money</h2>
-  ${panel('Revenue, spent &amp; profit', `${per} · by ${bucketUnit(bks).toLowerCase()}`, moneyChart(slice))}
+  ${panel('Received, spent &amp; profit', `${per} · by ${bucketUnit(bks).toLowerCase()}`, moneyChart(slice))}
   <div class="cols2">
     ${panel('Collected so far', `shoots ${per.toLowerCase()}`, stackBar([{ name: 'Collected', v: paidP.reduce((sum, p) => sum + Math.min(p.paid, net(p)), 0), c: 'var(--accent)' }, { name: 'Still owed', v: owed, c: GRAY }], 'No paid shoots in this period', money))}
-    ${panel('Revenue by shoot type', per, barList(Object.entries(typeRev).sort((a, b) => b[1] - a[1]).map(([k, v]) => ({ k, v, sub: `${plural(paidP.filter(p => (p.type || 'Other') === k).length, 'shoot')} · average ${money(v / paidP.filter(p => (p.type || 'Other') === k).length)}` })), 'No paid shoots in this period'))}
+    ${panel('Booked by shoot type', per, barList(Object.entries(typeRev).sort((a, b) => b[1] - a[1]).map(([k, v]) => ({ k, v, sub: `${plural(paidP.filter(p => (p.type || 'Other') === k).length, 'shoot')} · average ${money(v / paidP.filter(p => (p.type || 'Other') === k).length)}` })), 'No paid shoots in this period'))}
   </div>
   <h2 class="chart-h">Shoots &amp; bookings</h2>
   ${panel('Shoots', `${per} · by ${bucketUnit(bks).toLowerCase()}`, columnChart(slice, [{ k: 'paid', name: 'Paid', color: 'var(--accent)' }, { k: 'free', name: 'Free for your page', color: GRAY }], { stack: true, label: 'Shoots over time', h: 200 }))}
@@ -836,7 +863,7 @@ function moneyReport() {
   const owedTotal = owed.reduce((s, p) => s + balance(p), 0) + db.retainers.filter(retDue).reduce((s, r) => s + r.fee, 0);
 
   // Revenue and spending as columns, profit as a line, on one axis, sliced to fit the period.
-  const series = periodBuckets().map(b => { const m = moneyStats(b.from, b.to); return { ...b, v: { rev: m.revenue, exp: m.spent, prof: m.profit } }; });
+  const series = periodBuckets().map(b => { const m = moneyStats(b.from, b.to); return { ...b, v: { rev: m.received, exp: m.spent, prof: m.profit } }; });
   const svg = moneyChart(series);
   const unit = bucketUnit(series);
 
@@ -863,19 +890,19 @@ function moneyReport() {
   ui.moneySeries = series;
   return [`${per[ui.period]} · ${st.paidP.length} paid project${st.paidP.length === 1 ? '' : 's'} · average ${money(avg)}`, `
   <div class="kpis">
-    <div class="kpi"><small>Revenue</small><b>${money(st.revenue)}</b><em>collected ${money(st.collected)} · ${pct(st.collected, st.revenue)}%</em></div>
+    <div class="kpi"><small>Received</small><b>${money(st.received)}</b><em>money that came in · booked ${money(st.revenue)}</em></div>
     <div class="kpi"><small>Spent</small><b>${money(st.spent)}</b><em>team ${money(st.team)} · other ${money(st.spent - st.team)}</em></div>
-    <div class="kpi"><small>Profit</small><b class="acc">${money(st.profit)}</b><em>${pct(st.profit, st.revenue)}% margin</em></div>
+    <div class="kpi"><small>Profit</small><b class="acc">${money(st.profit)}</b><em>received minus spent · ${pct(st.profit, st.received)}%</em></div>
     <button class="kpi" data-jump="m-collect"><small>Still to collect</small><b>${money(owedTotal)}</b><em>${owed.length} client${owed.length === 1 ? '' : 's'} owe you</em></button>
   </div>
   <section class="panel" id="m-collect">${collectPanel()}</section>
-  <section class="panel"><div class="ph"><h2>Revenue, spent &amp; profit</h2><small>${per[ui.period]} · by ${unit.toLowerCase()}</small></div>${svg}
+  <section class="panel"><div class="ph"><h2>Received, spent &amp; profit</h2><small>${per[ui.period]} · by ${unit.toLowerCase()}</small></div>${svg}
     <p class="fine">Hover a ${unit.toLowerCase()} to see its numbers. More charts under <a class="linkbtn" href="#money/charts">Charts</a>.</p></section>
   <div class="cols">
     <section class="panel"><div class="ph"><h2>Where the money goes</h2><small>${money(st.spent)} · ${per[ui.period]}</small></div>
       ${barList(spendRows, 'No spending in this period. Log rentals, AI tools, editing and more with “+ Add expense”.')}</section>
     <section class="panel"><div class="ph"><h2>${unit} by ${unit.toLowerCase()}</h2><button class="linkbtn" data-money-csv>Download CSV</button></div>
-      <div class="tbl rep"><table><thead><tr><th>${unit}</th><th class="n">Revenue</th><th class="n">Spent</th><th class="n">Profit</th></tr></thead><tbody>
+      <div class="tbl rep"><table><thead><tr><th>${unit}</th><th class="n">Received</th><th class="n">Spent</th><th class="n">Profit</th></tr></thead><tbody>
       ${series.filter(s => s.v.rev || s.v.exp).reverse().map(s => `<tr><td>${esc(s.title)}</td><td class="n">${nf(s.v.rev)}</td><td class="n">${nf(s.v.exp)}</td><td class="n ${s.v.prof < 0 ? 'neg' : ''}">${nf(s.v.prof)}</td></tr>`).join('') || '<tr><td colspan="4" class="fine">Nothing in this period yet.</td></tr>'}
       <tr class="tot"><td>${per[ui.period]}</td><td class="n">${nf(series.reduce((a, s) => a + s.v.rev, 0))}</td><td class="n">${nf(series.reduce((a, s) => a + s.v.exp, 0))}</td><td class="n">${nf(series.reduce((a, s) => a + s.v.prof, 0))}</td></tr></tbody></table></div>
       <p class="fine">Amounts in ${esc(setting('currency'))}.</p></section>
@@ -921,7 +948,7 @@ function expensesBody() {
   </div>`];
 }
 function exportMoneyCsv() {
-  const rows = [[bucketUnit(ui.moneySeries || []), 'Revenue', 'Spent', 'Profit']].concat((ui.moneySeries || []).map(s => [`"${s.title}"`, s.v.rev, s.v.exp, s.v.prof]));
+  const rows = [[bucketUnit(ui.moneySeries || []), 'Received', 'Spent', 'Profit']].concat((ui.moneySeries || []).map(s => [`"${s.title}"`, s.v.rev, s.v.exp, s.v.prof]));
   download(`studio-money-${today()}.csv`, '﻿' + rows.map(r => r.join(',')).join('\n'), 'text/csv');
 }
 
@@ -1226,8 +1253,8 @@ function renderSettings() {
   <div class="vhead"><div><p class="eyebrow">Studio setup</p><h1>Set<span class="o">tings</span></h1></div></div>
   <div class="set-grid">
     <section class="panel stack"><h2>Connection</h2>
-      <dl class="kv"><dt>Sheet link</dt><dd>${esc(cfg.url.replace(/(macros\/s\/.{6}).+(.{6}\/exec)/, '$1…$2'))}</dd><dt>Last sync</dt><dd>${lastSync ? new Date(lastSync).toLocaleString() : 'Never'}</dd><dt>Waiting to save</dt><dd>${queue.length}</dd><dt>Discounts</dt><dd>${canDiscount() ? 'Ready' : '<span class="warn-t">Update the Apps Script</span>'}</dd></dl>
-      ${canDiscount() ? '' : `<p class="fine">To save discounts, the Sheet needs one more column. In the Sheet: Extensions → Apps Script, replace the code with the new <a class="linkbtn" href="https://github.com/ronysaad007/rony-studio/blob/main/apps-script/Code.gs" target="_blank" rel="noopener">Code.gs</a>, Save, then Deploy → Manage deployments → ✏️ → Version: New version → Deploy. Then press Sync now.</p>`}
+      <dl class="kv"><dt>Sheet link</dt><dd>${esc(cfg.url.replace(/(macros\/s\/.{6}).+(.{6}\/exec)/, '$1…$2'))}</dd><dt>Last sync</dt><dd>${lastSync ? new Date(lastSync).toLocaleString() : 'Never'}</dd><dt>Waiting to save</dt><dd>${queue.length}</dd><dt>Discounts</dt><dd>${canDiscount() ? 'Ready' : '<span class="warn-t">Update the Apps Script</span>'}</dd><dt>Shoot length</dt><dd>${hasCol('hours') ? 'Ready' : '<span class="warn-t">Update the Apps Script</span>'}</dd></dl>
+      ${canDiscount() && hasCol('hours') ? '' : `<p class="fine">To save discounts and shoot lengths, the Sheet needs new columns. In the Sheet: Extensions → Apps Script, replace the code with the new <a class="linkbtn" href="https://github.com/ronysaad007/rony-studio/blob/main/apps-script/Code.gs" target="_blank" rel="noopener">Code.gs</a>, Save, then Deploy → Manage deployments → ✏️ → Version: New version → Deploy. Then press Sync now.</p>`}
       <div class="modal-acts" style="justify-content:flex-start"><button class="btn sm" id="sSync">Sync now</button><button class="btn sm danger" id="sOut">Disconnect this device</button></div>
       <p class="fine">Edit anything straight in the Google Sheet too. Press Sync to pull those changes in.</p></section>
     <section class="panel stack"><h2>Invoice & quotation details</h2>
@@ -1258,13 +1285,14 @@ function renderSettings() {
       <div class="modal-acts" style="justify-content:flex-start"><button class="btn sm" id="sCsv">Download CSV</button><button class="btn sm" id="sJson">Download backup</button></div></section>
   </div>
   <div class="modal-acts"><button class="btn primary" id="sSave">Save settings</button></div>`;
-  const readPkgs = () => $$('#pkgList .pkg').map(el => ({ id: el.dataset.id, name: $('[data-f=name]', el).value.trim(), type: $('[data-f=type]', el).value, price: num($('[data-f=price]', el).value), items: $('[data-f=items]', el).value.trim() }));
+  const readPkgs = () => $$('#pkgList .pkg').map(el => ({ id: el.dataset.id, name: $('[data-f=name]', el).value.trim(), type: $('[data-f=type]', el).value, price: num($('[data-f=price]', el).value), hours: num($('[data-f=hours]', el).value), items: $('[data-f=items]', el).value.trim() }));
   let pkgs = packages();
   const drawPkgs = () => {
     $('#pkgList').innerHTML = pkgs.map(k => `<div class="pkg" data-id="${esc(k.id)}">
       <div class="grid3"><label class="field"><span>Name</span><input data-f="name" value="${esc(k.name)}" placeholder="e.g. Wedding Gold"></label>
         <label class="field"><span>Shoot type</span><select data-f="type">${[...new Set([...list('types'), k.type].filter(Boolean))].map(t => `<option ${t === k.type ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></label>
         <label class="field"><span>Price (${esc(setting('currency'))})</span><input data-f="price" type="number" inputmode="decimal" min="0" value="${k.price || ''}"></label></div>
+      <label class="field"><span>How long (hours)</span><input data-f="hours" type="number" inputmode="decimal" min="0" step="0.5" value="${k.hours || ''}" placeholder="e.g. 8"></label>
       <label class="field"><span>What's included</span><textarea data-f="items" rows="4" placeholder="Photos&#10;2 Reel +7&#10;Full Video&#10;Album +30">${esc(k.items)}</textarea></label>
       <button type="button" class="linkbtn pkg-del" data-pkg-del="${esc(k.id)}">Remove package</button></div>`).join('') || '<p class="fine">No packages yet.</p>';
   };
@@ -1298,6 +1326,8 @@ function openProject(id, preset, tab, then) {
   if (!p.id) return;
   let items = isNew ? (preset && preset._items) || [] : itemsOf(p.id).map(i => ({ ...i }));
   let crew = isNew ? [] : crewOf(p.id).map(c => ({ ...c }));
+  // Payments in the form: `pays` matches `paysPaid`; a change to Received is dated today when saved.
+  let pays = p.payments, paysPaid = p.paid;
   const opt = (arr, v) => [...new Set([...arr, v].filter(Boolean))].map(o => `<option ${o === v ? 'selected' : ''}>${esc(o)}</option>`).join('');
   const dr = $('#drawer');
   dr.innerHTML = `
@@ -1323,6 +1353,8 @@ function openProject(id, preset, tab, then) {
         <label class="field"><span>Status</span><select id="f-status">${opt(STATUSES, p.status)}</select></label>
         <label class="field"><span>Date</span><input id="f-date" type="date" value="${esc(p.date)}"></label>
         <label class="field"><span>Time</span><input id="f-time" type="time" value="${esc(p.time)}"></label></div>
+      <label class="field"><span>How long (hours)</span><input id="f-hours" type="number" inputmode="decimal" min="0" step="0.5" value="${p.hours || ''}" placeholder="e.g. 3" ${hasCol('hours') ? '' : 'disabled'}></label>
+      ${hasCol('hours') ? '' : '<p class="fine warn-t">To save the length, update the Apps Script once (see Settings → Connection).</p>'}
       <label class="field"><span>Location (address or Google Maps link)</span><input id="f-location" value="${esc(p.location)}"></label>
       <div class="grid2"><label class="check"><input type="checkbox" id="f-marketing" ${p.marketing ? 'checked' : ''}> Free shoot for my page</label>
         <label class="check"><input type="checkbox" id="f-posted" ${p.posted ? 'checked' : ''}> Posted on social</label></div>
@@ -1344,7 +1376,8 @@ function openProject(id, preset, tab, then) {
       <div class="money-sum" id="moneySum"></div>
       ${isNew ? '' : `<div class="plan" id="plan"></div>
       <div id="linkedExp"></div>
-      <div class="payrow"><input id="payAmt" type="number" inputmode="decimal" min="0" placeholder="Add a payment you received"><button type="button" class="btn sm" id="payAdd">Add payment</button><button type="button" class="btn sm ghost" id="payFull">Paid in full</button></div>`}
+      <div class="paylist" id="payList"></div>
+      <div class="payrow"><input id="payAmt" type="number" inputmode="decimal" min="0" placeholder="Add a payment you received"><input id="payDate" type="date" value="${today()}" aria-label="Received on"><button type="button" class="btn sm" id="payAdd">Add payment</button><button type="button" class="btn sm ghost" id="payFull">Paid in full</button></div>`}
     </section>
     <section class="dr-sec" data-pt="money"><h3>Team <button type="button" class="linkbtn" id="crAdd">+ Add</button></h3>
       <div class="items" id="crew"></div>
@@ -1386,6 +1419,10 @@ function openProject(id, preset, tab, then) {
     $('#moneySum').innerHTML = `${off ? `<div><small>Client pays</small><b>${money(price)}</b><small>${discLabel(now.discount)} off ${money(list)}</small></div>` : ''}<div><small>Balance</small><b style="color:${price - paid > 0 ? 'var(--bad)' : 'var(--ok)'}">${money(Math.max(0, price - paid))}</b></div><div><small>Profit${crew.length || lx.length ? ' after costs' : ''}</small><b>${money(price - ex)}</b></div><div><small>Margin</small><b>${price ? Math.round((price - ex) / price * 100) : 0}%</b></div>`;
     if (isNew) return;
     const dep = depositOf(now, paid);
+    const payRows = paysOf({ ...now, payments: pays, paid: paysPaid });
+    $('#payList').innerHTML = payRows.length ? payRows.map((x, i) => `<div class="pay-it"><span>${x.old ? 'Before dates were kept' : fmtDate(x.d)}</span><b>${money(x.a)}</b>${x.old ? '' : `<button type="button" class="del" data-pay-rm="${i - (payRows[0].old ? 1 : 0)}" aria-label="Remove this payment">✕</button>`}</div>`).join('')
+      + (paid !== paysPaid ? `<p class="fine">${paid > paysPaid ? money(paid - paysPaid) + ' more will be dated today' : money(paysPaid - paid) + ' less, taken from the latest payments'} when you save.</p>` : '') : '';
+    $$('[data-pay-rm]', dr).forEach(b => { b.onclick = () => { const a = parsePays(pays), x = a.splice(+b.dataset.payRm, 1)[0]; pays = a.length ? JSON.stringify(a) : ''; paysPaid -= x.a; $('#f-paid').value = Math.max(0, num(val('paid')) - x.a); drawMoney(); }; });
     $('#plan').innerHTML = dep ? `<div class="plan-it ${dep.left ? (dep.due && dep.due < today() ? 'late' : '') : 'done'}"><span><b>Deposit ${money(dep.amt)}</b><small>${esc(dep.no)}${dep.due ? ' · due ' + fmtDate(dep.due) : ''}</small></span>
         ${dep.left ? `<button type="button" class="btn sm" id="depIn">Deposit received</button>` : '<span class="tag t-ok">Received</span>'}</div>
       <div class="plan-it ${bal ? '' : 'done'}"><span><b>Balance ${money(Math.max(0, price - Math.max(paid, dep.amt)))}</b><small>after the shoot${now.date ? ', ' + fmtDate(now.date) : ''}</small></span>${bal ? '' : '<span class="tag t-ok">Paid</span>'}</div>`
@@ -1433,8 +1470,8 @@ function openProject(id, preset, tab, then) {
     const out = normP({
       ...p, client: val('client'), phone: val('phone'), instagram: val('instagram'), email: val('email'), source: $('#f-source').value,
       title: val('title') || `${$('#f-type').value} – ${val('client')}`, type: $('#f-type').value, status: $('#f-status').value,
-      date: val('date'), time: val('time'), location: val('location'), marketing: $('#f-marketing').checked, posted: $('#f-posted').checked,
-      price: val('price'), discount: canDiscount() ? val('discount') : p.discount, paid: val('paid'), expenses: val('expenses'), drive: val('drive'), notes: $('#f-notes').value.trim(),
+      date: val('date'), time: val('time'), hours: hasCol('hours') ? val('hours') : p.hours, location: val('location'), marketing: $('#f-marketing').checked, posted: $('#f-posted').checked,
+      price: val('price'), discount: canDiscount() ? val('discount') : p.discount, paid: val('paid'), payments: syncPays({ payments: pays, paid: paysPaid }, val('paid')), expenses: val('expenses'), drive: val('drive'), notes: $('#f-notes').value.trim(),
     });
     const k = fpkg();
     if (isNew && k && !val('title')) out.title = `${k.name} – ${out.client}`;
@@ -1444,7 +1481,7 @@ function openProject(id, preset, tab, then) {
     saveProject(out, its, team);
     saveClientInfo(out, { trn: val('trn'), address: $('#f-caddr').value });
     if (close && isNew && out.status === 'Quoted') { closeLayers(); render(); openProject(out.id, null, 'docs', 'quote'); }
-    else if (close) { closeLayers(); render(); toast(isNew ? (out.status === 'Inquiry' ? 'Inquiry added' : 'Booking added') : 'Saved'); } else { Object.assign(p, out); ui.keepScroll = true; render(); }
+    else if (close) { closeLayers(); render(); toast(isNew ? (out.status === 'Inquiry' ? 'Inquiry added' : 'Booking added') : 'Saved'); } else { Object.assign(p, out); pays = out.payments; paysPaid = out.paid; ui.keepScroll = true; render(); drawMoney(); }
     return true;
   };
   // The usual deliverables for the chosen type: ticked on a new booking, a one-tap add on an existing one.
@@ -1460,7 +1497,7 @@ function openProject(id, preset, tab, then) {
   // A package fills the type and price; on an existing project it also adds what's missing from its list.
   if ($('#f-pkg')) $('#f-pkg').onchange = () => {
     const k = fpkg(); if (!k) { drawTpl(); return; }
-    pick($('#f-type'), k.type); if (k.price) $('#f-price').value = k.price;
+    pick($('#f-type'), k.type); if (k.price) $('#f-price').value = k.price; if (k.hours && hasCol('hours')) $('#f-hours').value = k.hours;
     if (!isNew) {
       const have = new Set(items.map(i => (i.title || i.type).trim().toLowerCase()));
       const add = parseItems(k.items, val('date'), p.id).filter(i => !have.has(i.title.toLowerCase()));
@@ -1500,7 +1537,12 @@ function openProject(id, preset, tab, then) {
   $('#itAdd').onclick = () => { items.push({ id: uid(), projectId: p.id, type: list('itemTypes')[0] || '', qty: 1, title: '', status: 'Pending', due: '', notes: '' }); drawItems(); $$('#items .item input[data-k=title]').pop().focus(); };
   $('#pSave').onclick = () => save(true);
   if (isNew) return;
-  $('#payAdd').onclick = () => { const a = num($('#payAmt').value); if (!a) return; $('#f-paid').value = num(val('paid')) + a; $('#payAmt').value = ''; drawMoney(); toast(`${money(a)} added. Save to keep it.`); };
+  $('#payAdd').onclick = () => {
+    const a = num($('#payAmt').value), d = $('#payDate').value || today(); if (!a) return;
+    const added = parsePays(pays); added.push({ d, a }); added.sort((x, y) => x.d.localeCompare(y.d));
+    pays = JSON.stringify(added); paysPaid += a; $('#f-paid').value = num(val('paid')) + a; $('#payAmt').value = '';
+    drawMoney(); toast(`${money(a)} on ${fmtDate(d)} added. Save to keep it.`);
+  };
   $('#payFull').onclick = () => { $('#f-paid').value = net(normP({ price: val('price'), discount: val('discount') })); drawMoney(); };
   $('#pInvoice').onclick = () => { printInvoice(project(p.id)); drawDocs(); };
   $('#pQuote').onclick = () => openQuote(project(p.id), () => { if ($('#f-discount')) $('#f-discount').value = project(p.id).discount; drawDocs(); drawMoney(); });
@@ -1527,6 +1569,7 @@ function openQuickAdd(date) {
       <label class="field"><span>Price (${esc(setting('currency'))})</span><input id="q-price" type="number" inputmode="decimal" min="0" placeholder="0"></label>
       <label class="field"><span>Date</span><input id="q-date" type="date" value="${esc(date || '')}"></label>
       <label class="field"><span>Time</span><input id="q-time" type="time"></label>
+      ${hasCol('hours') ? '<label class="field"><span>How long (hours)</span><input id="q-hours" type="number" inputmode="decimal" min="0" step="0.5" placeholder="e.g. 3"></label>' : ''}
     </div>
     <label class="check"><input type="checkbox" id="q-free"> Free shoot for my page</label>
     <label class="check tpl-chk"><input type="checkbox" id="q-tpl" checked> <span id="q-tplTxt"></span></label>
@@ -1544,7 +1587,7 @@ function openQuickAdd(date) {
   const qpkg = () => $('#q-pkg') && pkgOf($('#q-pkg').value);
   const drawTpl = () => { const k = qpkg(), t = k ? pkgSummary(k) : tplSummary($('#q-type').value); $('#q-tplTxt').textContent = `${k ? 'Add what ' + k.name + ' includes' : 'Add the usual deliverables'}: ${t}`; $('.tpl-chk', m).hidden = !t; };
   drawTpl(); $('#q-type').addEventListener('change', drawTpl);
-  if ($('#q-pkg')) $('#q-pkg').onchange = () => { const k = qpkg(); if (k) { pick($('#q-type'), k.type); $('#q-price').value = k.price || ''; } drawTpl(); };
+  if ($('#q-pkg')) $('#q-pkg').onchange = () => { const k = qpkg(); if (k) { pick($('#q-type'), k.type); $('#q-price').value = k.price || ''; if ($('#q-hours')) $('#q-hours').value = k.hours || ''; } drawTpl(); };
   $('#q-client').addEventListener('change', e => {
     const prev = db.projects.find(p => p.client.toLowerCase() === e.target.value.trim().toLowerCase() && p.phone);
     if (prev && !$('#q-phone').value) $('#q-phone').value = prev.phone;
@@ -1554,7 +1597,7 @@ function openQuickAdd(date) {
     const prev = db.projects.find(p => p.client.toLowerCase() === client.toLowerCase());
     return {
       client, phone: $('#q-phone').value.trim(), type, title: client ? `${qpkg() ? qpkg().name : type} – ${client}` : '', price: $('#q-price').value, _pkg: qpkg() ? qpkg().id : '',
-      date: $('#q-date').value, time: $('#q-time').value, status: kind, marketing: $('#q-free').checked,
+      date: $('#q-date').value, time: $('#q-time').value, hours: $('#q-hours') ? $('#q-hours').value : '', status: kind, marketing: $('#q-free').checked,
       instagram: prev ? prev.instagram : '', email: prev ? prev.email : '', source: prev ? prev.source : '',
     };
   };
@@ -1658,7 +1701,7 @@ function docSnapshot(p, kind, dep) {
   const days = Math.max(1, num(setting('quoteDays')) || 14);
   return {
     kind, code: p.code, client: p.client, phone: p.phone, email: p.email, trn: clientInfo(p).trn || '', address: clientInfo(p).address || '',
-    title: p.title, type: p.type, location: p.location, date: p.date, time: p.time,
+    title: p.title, type: p.type, location: p.location, date: p.date, time: p.time, hours: p.hours,
     items: itemsOf(p.id).map(i => ({ title: i.title || i.type, type: i.type, qty: i.qty })),
     price: net(p), paid: p.paid, balance: balance(p),
     ...(discAmt(p.price, p.discount) ? { list: p.price, discount: normDisc(p.discount), off: discAmt(p.price, p.discount) } : {}),
@@ -1687,7 +1730,7 @@ function docHtml(s, d) {
   <header class="doc-top">${logo}<span class="doc-pill"><i></i>${docKind(s.kind)} / ${year}</span></header>
   <p class="doc-eyebrow">${esc(b.tagline)}</p>
   <h1 class="doc-title">${quote ? 'Quote' : 'Invoice'}<span>.</span></h1>
-  <div class="doc-ids"><div><span>No.</span><b>${esc(d.no)}</b></div><div><span>Issued</span><b>${docDate(d.date)}</b></div>${quote && s.valid ? `<div><span>Valid until</span><b>${docDate(s.valid)}</b></div>` : ''}${s.date ? `<div><span>Shoot date</span><b>${docDate(s.date)}${s.time ? ' · ' + esc(s.time) : ''}</b></div>` : ''}</div>
+  <div class="doc-ids"><div><span>No.</span><b>${esc(d.no)}</b></div><div><span>Issued</span><b>${docDate(d.date)}</b></div>${quote && s.valid ? `<div><span>Valid until</span><b>${docDate(s.valid)}</b></div>` : ''}${s.date ? `<div><span>Shoot date</span><b>${docDate(s.date)}${s.time ? ' · ' + esc(s.time) : ''}</b></div>` : ''}${num(s.hours) ? `<div><span>Coverage</span><b>${fmtHours(s.hours)}</b></div>` : ''}</div>
   <div class="doc-meta">
     <div class="doc-box"><span class="doc-k">${quote ? 'Prepared for' : 'Billed to'}</span><b>${esc(s.client)}</b>${s.address ? `<p>${esc(s.address)}</p>` : ''}${s.phone ? `<p>${esc(s.phone)}</p>` : ''}${s.email ? `<p>${esc(s.email)}</p>` : ''}${s.trn ? `<p>TRN ${esc(s.trn)}</p>` : ''}</div>
     <div class="doc-box"><span class="doc-k">From</span><b>${esc(b.name)}</b>${[b.address, b.phone, b.email, b.trn && 'TRN ' + b.trn].filter(Boolean).map(v => `<p>${esc(v)}</p>`).join('')}</div>
